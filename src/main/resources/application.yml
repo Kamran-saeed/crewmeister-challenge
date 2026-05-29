@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: ${SPRING_APPLICATION_NAME:app}
+  datasource:
+    username: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:dev}
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/challenge?createDatabaseIfNotExist=true}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    url: ${SPRING_DATASOURCE_WRITER_URL:jdbc:mysql://localhost:3306/challenge?createDatabaseIfNotExist=true}
+    user: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:dev}
+    enabled: true
+
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ${ACTUATOR_ENDPOINTS:health,info,prometheus}
