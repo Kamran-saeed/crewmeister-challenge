@@ -12,6 +12,7 @@ A Spring Boot REST API with MySQL, containerized with Docker and deployable via 
 - [Prerequisites](#prerequisites)
 - [Local Setup](#local-setup)
 - [Kubernetes Deployment](#kubernetes-deployment)
+- [Terraform](#terraform)
 - [CI/CD Pipeline](#cicd-pipeline)
 - [Monitoring](#monitoring)
 
@@ -62,8 +63,13 @@ Architecture diagrams are provided per deployment environment. Each section belo
 │       │   └── values.yaml.example         # Template for local setup
 │       └── production/
 │           └── values.yaml.example         # Template for production setup
-├── terraform/                        # Terraform configuration (coming soon)
-└── pom.xml                           # Maven dependencies and build configuration
+├── terraform/
+│   ├── main.tf                             # Providers and helm_release resource
+│   ├── variables.tf                        # Input variable declarations
+│   ├── terraform.tfvars                    # Actual values with password (not committed)
+│   ├── terraform.tfvars.example            # Template for variable values
+│   └── .terraform.lock.hcl                 # Provider version lock file
+└── pom.xml                                 # Maven dependencies and build configuration
 ```
 
 ---
@@ -78,7 +84,7 @@ Maven and Java do not need to be installed locally — the build happens inside 
 ### Kubernetes Deployment
 - `kubectl`
 - `helm`
-- `terraform`
+- `terraform >= 1.9.0` — versions below 1.9.0 have an expired GPG key issue with provider installation
 - `minikube` — for local Kubernetes cluster
 
 ---
@@ -301,6 +307,85 @@ helm upgrade crewmeister ./helm/crewmeister -f ./helm/environments/local/values.
 **Removing the release**
 ```bash
 helm uninstall crewmeister
+```
+
+---
+
+## Terraform
+
+Terraform manages the Helm release as infrastructure as code using the Helm and Kubernetes providers. Both providers connect to the cluster via the active kubeconfig context — switching context is all that's needed to target a different cluster.
+
+The Helm chart is referenced by local path since it lives in the same repository. In a production setup the chart would be published to a registry and versioned independently.
+
+### Files
+
+| File | Purpose | Committed |
+|---|---|---|
+| `main.tf` | Providers and `helm_release` resource | Yes |
+| `variables.tf` | Input variable declarations | Yes |
+| `terraform.tfvars` | Actual values — includes MySQL password | No — in `.gitignore` |
+| `terraform.tfvars.example` | Template for variable values | Yes |
+| `.terraform.lock.hcl` | Pins exact provider versions for reproducible installs | Yes |
+
+### Deployment
+
+**1. Configure variables**
+```bash
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+```
+Edit `terraform/terraform.tfvars` and set your MySQL password. Set `kubeconfig_context` to match your target cluster — `minikube` for local, or your cloud cluster context name for production.
+
+**2. Initialise Terraform**
+
+Downloads the Helm and Kubernetes providers:
+```bash
+cd terraform
+terraform init
+```
+
+**3. Preview the deployment**
+```bash
+terraform plan
+```
+Shows exactly what will be deployed. The MySQL password is marked sensitive and will never appear in the output.
+
+**4. Deploy**
+```bash
+terraform apply
+```
+Terraform deploys the Helm chart and waits until all pods are running and healthy before returning. The deployment is complete only when the app is genuinely ready.
+
+**5. Verify**
+```bash
+kubectl get pods
+```
+
+Expected output:
+```
+NAME                                  READY   STATUS    RESTARTS   AGE
+crewmeister-app-xxx                   1/1     Running   0          60s
+crewmeister-mysql-xxx                 1/1     Running   0          60s
+```
+
+Then test the API using the same port-forward steps in the [Kubernetes Deployment](#kubernetes-deployment) section.
+
+**Destroying the deployment**
+```bash
+terraform destroy
+```
+
+### Switching Clusters
+
+To deploy to a different cluster, update `kubeconfig_context` in `terraform.tfvars` to match the target context:
+
+```bash
+# check available contexts
+kubectl config get-contexts
+
+# update terraform.tfvars
+kubeconfig_context = "your-cluster-context"
+
+terraform apply
 ```
 
 ---
