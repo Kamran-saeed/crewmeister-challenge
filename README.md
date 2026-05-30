@@ -45,6 +45,9 @@ Architecture diagrams are provided per deployment environment. Each section belo
 ├── Dockerfile                        # Multi-stage build — JDK for building, JRE for running
 ├── docker-compose.yml                # Local development stack — app + MySQL
 ├── .env.example                      # Environment variable template
+├── .github/
+│   └── workflows/
+│       └── ci.yml                    # GitHub Actions — test, build, push to GHCR
 ├── helm/
 │   ├── crewmeister/                        # Helm chart — reusable, environment-agnostic
 │   │   ├── Chart.yaml                      # Chart metadata
@@ -114,7 +117,7 @@ Both services run inside the same Docker network and communicate using service n
 
 **1. Clone the repository**
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/Kamran-saeed/crewmeister-challenge.git
 cd crewmeister-challenge
 ```
 
@@ -392,11 +395,88 @@ terraform apply
 
 ## CI/CD Pipeline
 
+The pipeline runs on GitHub Actions and is defined in `.github/workflows/ci.yml`. It triggers on every push to `main`.
+
 ### Architecture
 
-> Diagram coming soon — will cover the full pipeline flow from a GitHub push through to a running deployment on Kubernetes.
+```
+push to main
+     │
+     ▼
+┌─────────────────────────────────────────┐
+│               test job                  │
+│                                         │
+│  checkout code                          │
+│       │                                 │
+│       ▼                                 │
+│  MySQL 8.0 service container            │
+│  (health checked before tests run)      │
+│       │                                 │
+│       ▼                                 │
+│  JDK 17 setup                           │
+│       │                                 │
+│       ▼                                 │
+│  mvn test                               │
+└─────────────────┬───────────────────────┘
+                  │ only if green
+                  ▼
+┌─────────────────────────────────────────┐
+│           build-and-push job            │
+│                                         │
+│  checkout code                          │
+│       │                                 │
+│       ▼                                 │
+│  Docker Buildx setup                    │
+│       │                                 │
+│       ▼                                 │
+│  login to GHCR (GITHUB_TOKEN)           │
+│       │                                 │
+│       ▼                                 │
+│  docker build + push                    │
+│  (multi-stage — no JDK needed locally)  │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+         ghcr.io/kamran-saeed/
+         crewmeister-challenge
+         :latest
+         :sha-<commit-sha>
+```
 
-> Coming soon — GitHub Actions workflow.
+### Jobs
+
+**`test`** — spins up a MySQL 8.0 service container, installs JDK 17, and runs `mvn test`. The Spring Boot context load test connects to the real MySQL, runs Flyway migrations, and verifies the application boots successfully.
+
+**`build-and-push`** — runs only if `test` passes. Builds the Docker image using the multi-stage Dockerfile (Maven build happens inside the container — no JDK required on the runner) and pushes to GHCR with two tags.
+
+### Image
+
+The built image is published to GitHub Container Registry:
+
+```
+ghcr.io/kamran-saeed/crewmeister-challenge:latest        # latest main build
+ghcr.io/kamran-saeed/crewmeister-challenge:sha-<commit>  # exact commit reference
+```
+
+Pull the image:
+```bash
+docker pull ghcr.io/kamran-saeed/crewmeister-challenge:latest
+```
+
+The SHA tag provides traceability — you can identify exactly which commit produced any given image.
+
+### Deployment
+
+The pipeline stops at image push. Deploying to a cluster is a manual step:
+
+```bash
+# update the image tag in your values file, then:
+helm upgrade crewmeister ./helm/crewmeister -f ./helm/environments/local/values.yaml
+# or via Terraform:
+terraform apply
+```
+
+In a production setup the deploy step would be automated as a third job, gated on the `build-and-push` job and targeting a cloud cluster via kubeconfig stored as a GitHub Actions secret.
 
 ---
 
