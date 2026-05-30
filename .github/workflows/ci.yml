@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -38,3 +42,30 @@ jobs:
           SPRING_DATASOURCE_WRITER_URL: jdbc:mysql://localhost:3306/challenge?createDatabaseIfNotExist=true
           SPRING_DATASOURCE_PASSWORD: test
         run: ./mvnw test
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/kamran-saeed/crewmeister-challenge:latest
+            ghcr.io/kamran-saeed/crewmeister-challenge:sha-${{ github.sha }}
