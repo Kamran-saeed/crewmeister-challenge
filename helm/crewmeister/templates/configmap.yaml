@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    app: {{ .Release.Name }}
+data:
+  SPRING_DATASOURCE_URL: "jdbc:mysql://{{ .Release.Name }}-mysql-service:{{ .Values.mysql.port }}/{{ .Values.mysql.database }}?createDatabaseIfNotExist=true"
+  SPRING_DATASOURCE_WRITER_URL: "jdbc:mysql://{{ .Release.Name }}-mysql-service:{{ .Values.mysql.port }}/{{ .Values.mysql.database }}?createDatabaseIfNotExist=true"
+  SPRING_DATASOURCE_USERNAME: {{ .Values.mysql.username | quote }}

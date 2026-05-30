@@ -1,0 +1,15 @@
+app:
+  image: ghcr.io/kamran-saeed/crewmeister-challenge
+  tag: latest
+  replicas: 1
+  port: 8080
+  pullPolicy: Always
+
+mysql:
+  image: mysql
+  tag: "8.0"
+  port: 3306
+  database: challenge
+  username: root
+  password: ""
+  storage: 1Gi

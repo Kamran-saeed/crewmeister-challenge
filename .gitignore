@@ -3,6 +3,9 @@ target/
 
 ### Environment variables ###
 .env
+
+### Helm environment values ###
+helm/environments/**/values.yaml
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

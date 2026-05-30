@@ -1,0 +1,9 @@
+app:
+  image: ghcr.io/kamran-saeed/crewmeister-challenge
+  tag: "your_image_tag_here"
+  replicas: 2
+  pullPolicy: Always
+
+mysql:
+  password: your_strong_password_here
+  storage: 10Gi
