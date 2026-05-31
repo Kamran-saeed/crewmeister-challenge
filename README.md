@@ -55,8 +55,14 @@ Architecture diagrams are provided per deployment environment. Each section belo
 │       └── environments/   # Environment-specific values (local, production)
 └── infrastructure/
     └── terraform/
-        ├── app/            # Terraform module — deploys crewmeister Helm release
-        └── monitoring/     # Terraform module — deploys kube-prometheus-stack
+        ├── crewmeister-app/    # Terraform — deploys crewmeister Helm release
+        │   ├── base/           # Reusable module (helm_release + templatefile)
+        │   ├── local/          # Minikube environment root — calls base/
+        │   └── production/     # Production environment root — calls base/, S3 backend
+        └── monitoring/         # Terraform — deploys kube-prometheus-stack
+            ├── base/           # Reusable module (helm_release + templatefile)
+            ├── local/          # Minikube environment root — calls base/
+            └── production/     # Production environment root — calls base/, S3 backend
 ```
 
 ---
@@ -224,12 +230,12 @@ MySQL data is stored on a PersistentVolumeClaim so it survives pod restarts.
 
 All configurable values live in `values.yaml`. Environment-specific overrides go in separate files — only the values that differ from defaults need to be specified.
 
-| File | Used for | Committed |
-|---|---|---|
-| `kubernetes/helm/crewmeister/values.yaml` | Defaults — base configuration | Yes |
-| `kubernetes/helm/environments/local/values.yaml` | Minikube — local image, `Never` pull policy, real password | No — in `.gitignore` |
-| `kubernetes/helm/environments/local/values.yaml.example` | Template for local setup | Yes |
-| `kubernetes/helm/environments/production/values.yaml.example` | Template for production setup | Yes |
+| File | Purpose |
+|---|---|
+| `kubernetes/helm/crewmeister/values.yaml` | Defaults — base configuration |
+| `kubernetes/helm/environments/local/values.yaml` | Minikube — local image, `Never` pull policy, real password |
+| `kubernetes/helm/environments/local/values.yaml.example` | Template for local setup |
+| `kubernetes/helm/environments/production/values.yaml.example` | Template for production setup |
 
 ### Local Kubernetes Deployment (minikube)
 
@@ -351,54 +357,48 @@ kubectl delete namespace monitoring
 
 ## Terraform
 
-Terraform manages Helm releases as infrastructure as code using the Helm and Kubernetes providers. Both providers connect to the cluster via the active kubeconfig context — switching context is all that's needed to target a different cluster.
-
-The setup is split into two independent modules — `infrastructure/terraform/app/` and `infrastructure/terraform/monitoring/` — each with its own state file and lifecycle. This means you can deploy, update, or destroy the monitoring stack without touching the application deployment.
+Terraform manages Helm releases as infrastructure as code using the Helm and Kubernetes providers. Each component (`crewmeister-app`, `monitoring`) follows a `base` / environment pattern — `base/` contains all resource definitions, `local/` and `production/` are environment root modules that call `base/`, set their own kubeconfig context in `providers.tf`, and define their own backend. Each component has its own state file, so you can deploy, update, or destroy monitoring without touching the application.
 
 The Helm chart is referenced by local path since it lives in the same repository. In a production setup the chart would be published to a registry and versioned independently.
 
-### Modules
+### Structure
 
-**`infrastructure/terraform/app/`** — deploys the crewmeister Helm release (Spring Boot app + MySQL).
+**`base/`** — reusable module, shared across environments. Contains the `helm_release` resource and `templatefile()` rendering. No provider or backend configuration.
 
-| File | Purpose | Committed |
-|---|---|---|
-| `versions.tf` | Terraform and provider version constraints | Yes |
-| `providers.tf` | Helm and Kubernetes provider configuration | Yes |
-| `main.tf` | `helm_release` resource | Yes |
-| `variables.tf` | Input variable declarations | Yes |
-| `outputs.tf` | Outputs — release name, namespace, status | Yes |
-| `templates/values.yaml.tpl` | Helm values template rendered from Terraform variables | Yes |
-| `terraform.tfvars` | Actual values — includes MySQL password | No — in `.gitignore` |
-| `terraform.tfvars.example` | Template for variable values | Yes |
-| `.terraform.lock.hcl` | Pins exact provider versions for reproducible installs | Yes |
+| File | Purpose |
+|---|---|
+| `main.tf` | `helm_release` resource with `templatefile()` |
+| `variables.tf` | Input variable declarations |
+| `outputs.tf` | Outputs — release name, namespace, status |
+| `templates/values.yaml.tpl` | Helm values template rendered from Terraform variables |
 
-**`infrastructure/terraform/monitoring/`** — deploys kube-prometheus-stack (Prometheus + Grafana + exporters).
+**`local/` and `production/`** — environment root modules. Each calls `../base` and wires in environment-specific values directly in `main.tf`. Only sensitive values (passwords) go in `terraform.tfvars`.
 
-| File | Purpose | Committed |
-|---|---|---|
-| `versions.tf` | Terraform and provider version constraints | Yes |
-| `providers.tf` | Helm and Kubernetes provider configuration | Yes |
-| `main.tf` | `helm_release` resource for kube-prometheus-stack | Yes |
-| `variables.tf` | Input variable declarations | Yes |
-| `outputs.tf` | Outputs — release name, namespace, status | Yes |
-| `templates/values.yaml.tpl` | Helm values template rendered from Terraform variables | Yes |
-| `terraform.tfvars` | Actual values — includes Grafana admin password | No — in `.gitignore` |
-| `terraform.tfvars.example` | Template for variable values | Yes |
-| `.terraform.lock.hcl` | Pins exact provider versions for reproducible installs | Yes |
+| File | Purpose |
+|---|---|
+| `main.tf` | Calls `../base` with environment-specific values hardcoded |
+| `variables.tf` | Sensitive variable declarations only |
+| `providers.tf` | Provider config with environment-specific kubeconfig context |
+| `versions.tf` | Terraform and provider version constraints |
+| `backend.tf` | `local` backend for minikube, `s3` backend for production |
+| `terraform.tfvars` | Sensitive values (passwords) — gitignored |
+| `terraform.tfvars.example` | Template for sensitive values |
+| `.terraform.lock.hcl` | Pins exact provider versions for reproducible installs |
 
 ### Deployment
+
+Each environment directory is a self-contained Terraform root — just `cd` into it and run `terraform apply`.
 
 Monitoring must be deployed first — it installs the `ServiceMonitor` CRD that the app chart references.
 
 **1. Deploy monitoring stack**
 ```bash
-cp infrastructure/terraform/monitoring/terraform.tfvars.example infrastructure/terraform/monitoring/terraform.tfvars
+cp infrastructure/terraform/monitoring/local/terraform.tfvars.example infrastructure/terraform/monitoring/local/terraform.tfvars
 ```
-Edit `infrastructure/terraform/monitoring/terraform.tfvars` and set your Grafana admin password and kubeconfig context. All Helm values are rendered from this file — no separate values YAML needed.
+Edit `terraform.tfvars` and set your Grafana admin password.
 
 ```bash
-cd infrastructure/terraform/monitoring
+cd infrastructure/terraform/monitoring/local
 terraform init
 terraform apply
 ```
@@ -407,12 +407,12 @@ Terraform deploys kube-prometheus-stack into the `monitoring` namespace and wait
 
 **2. Deploy the application**
 ```bash
-cp infrastructure/terraform/app/terraform.tfvars.example infrastructure/terraform/app/terraform.tfvars
+cp infrastructure/terraform/crewmeister-app/local/terraform.tfvars.example infrastructure/terraform/crewmeister-app/local/terraform.tfvars
 ```
-Edit `infrastructure/terraform/app/terraform.tfvars` and set your MySQL password and kubeconfig context. To enable Prometheus scraping, set `service_monitor_enabled = true` — this requires the monitoring stack to already be deployed.
+Edit `terraform.tfvars` and set your MySQL password. To enable Prometheus scraping, set `service_monitor_enabled = true` in `infrastructure/terraform/crewmeister-app/local/main.tf` — requires the monitoring stack to be deployed first.
 
 ```bash
-cd infrastructure/terraform/app
+cd infrastructure/terraform/crewmeister-app/local
 terraform init
 terraform apply
 ```
@@ -427,22 +427,8 @@ Then test the API using the same port-forward steps in the [Kubernetes Deploymen
 
 **Destroying the deployments**
 ```bash
-cd infrastructure/terraform/app && terraform destroy
-cd infrastructure/terraform/monitoring && terraform destroy
-```
-
-### Switching Clusters
-
-To deploy to a different cluster, update `kubeconfig_context` in the relevant `terraform.tfvars` file:
-
-```bash
-# check available contexts
-kubectl config get-contexts
-
-# update terraform.tfvars in both modules
-kubeconfig_context = "your-cluster-context"
-
-terraform apply
+cd infrastructure/terraform/crewmeister-app/local && terraform destroy
+cd infrastructure/terraform/monitoring/local && terraform destroy
 ```
 
 ---
@@ -527,8 +513,8 @@ The pipeline stops at image push. Deploying to a cluster is a manual step:
 # via Helm:
 helm upgrade crewmeister ./kubernetes/helm/crewmeister -f ./kubernetes/helm/environments/local/values.yaml
 
-# via Terraform — update app_tag in terraform.tfvars, then:
-cd infrastructure/terraform/app && terraform apply
+# via Terraform — update app_tag in local/main.tf, then:
+cd infrastructure/terraform/crewmeister-app/local && terraform apply
 ```
 
 In a production setup the deploy step would be automated as a third job, gated on the `build-and-push` job and targeting a cloud cluster via kubeconfig stored as a GitHub Actions secret.
@@ -615,7 +601,7 @@ The pre-loaded dashboard is **Spring Boot 2.1 System Monitor** — it shows JVM 
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-The app Helm chart includes an optional `ServiceMonitor` resource — a Kubernetes CRD that tells the Prometheus operator which pods to scrape and how. It is disabled by default (`serviceMonitor.enabled: false`) and enabled in the local environment values.
+The app Helm chart includes an optional `ServiceMonitor` resource — a Kubernetes CRD that tells the Prometheus operator which pods to scrape and how. It is disabled by default — enable it once the monitoring stack is deployed.
 
 kube-prometheus-stack is deployed as a separate Terraform module (`infrastructure/terraform/monitoring/`) and includes: Prometheus operator, Prometheus, Grafana, kube-state-metrics, and node-exporter.
 

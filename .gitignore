@@ -13,7 +13,8 @@ infrastructure/terraform/**/.terraform/
 infrastructure/terraform/**/terraform.tfstate
 infrastructure/terraform/**/terraform.tfstate.backup
 infrastructure/terraform/**/terraform.tfvars
-# terraform/**/.terraform.lock.hcl  # intentionally committed — pins provider versions
+!infrastructure/terraform/**/terraform.tfvars.example
+# .terraform.lock.hcl intentionally committed — pins provider versions
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
