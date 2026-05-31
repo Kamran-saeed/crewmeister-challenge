@@ -1,9 +1,9 @@
 terraform {
   backend "s3" {
-    bucket         = "your-terraform-state-bucket"
+    bucket         = "crewmeister-terraform-state"
     key            = "monitoring/production/terraform.tfstate"
     region         = "eu-central-1"
-    dynamodb_table = "terraform-state-lock"
+    dynamodb_table = "crewmeister-terraform-state-lock"
     encrypt        = true
   }
 }

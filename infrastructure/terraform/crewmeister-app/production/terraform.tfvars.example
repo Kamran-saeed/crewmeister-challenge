@@ -1,1 +1,3 @@
-mysql_password = "your_strong_production_password"
+cluster_name   = "your-eks-cluster-name"
+mysql_password          = "your_strong_production_password"
+service_monitor_enabled = true

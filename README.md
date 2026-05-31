@@ -357,7 +357,9 @@ kubectl delete namespace monitoring
 
 ## Terraform
 
-Terraform manages Helm releases as infrastructure as code using the Helm and Kubernetes providers. Each component (`crewmeister-app`, `monitoring`) follows a `base` / environment pattern — `base/` contains all resource definitions, `local/` and `production/` are environment root modules that call `base/`, set their own kubeconfig context in `providers.tf`, and define their own backend. Each component has its own state file, so you can deploy, update, or destroy monitoring without touching the application.
+Terraform manages Helm releases as infrastructure as code using the Helm and Kubernetes providers. Each component (`crewmeister-app`, `monitoring`) follows a `base` / environment pattern — `base/` contains all resource definitions, `local/` and `production/` are environment root modules that call `base/`, configure their own provider, and define their own backend. Each component has its own state file, so you can deploy, update, or destroy monitoring without touching the application.
+
+`local/` connects to minikube via kubeconfig. `production/` connects to EKS directly via AWS APIs — it uses `aws_eks_cluster` and `aws_eks_cluster_auth` data sources to fetch the cluster endpoint and auth token, so no kubeconfig file is needed on the machine running Terraform.
 
 The Helm chart is referenced by local path since it lives in the same repository. In a production setup the chart would be published to a registry and versioned independently.
 
@@ -378,16 +380,14 @@ The Helm chart is referenced by local path since it lives in the same repository
 |---|---|
 | `main.tf` | Calls `../base` with environment-specific values hardcoded |
 | `variables.tf` | Sensitive variable declarations only |
-| `providers.tf` | Provider config with environment-specific kubeconfig context |
+| `providers.tf` | Provider config — kubeconfig for local, AWS EKS data sources for production |
 | `versions.tf` | Terraform and provider version constraints |
 | `backend.tf` | `local` backend for minikube, `s3` backend for production |
 | `terraform.tfvars` | Sensitive values (passwords) — gitignored |
 | `terraform.tfvars.example` | Template for sensitive values |
 | `.terraform.lock.hcl` | Pins exact provider versions for reproducible installs |
 
-### Deployment
-
-Each environment directory is a self-contained Terraform root — just `cd` into it and run `terraform apply`.
+### Local Deployment (minikube)
 
 Monitoring must be deployed first — it installs the `ServiceMonitor` CRD that the app chart references.
 
@@ -409,7 +409,7 @@ Terraform deploys kube-prometheus-stack into the `monitoring` namespace and wait
 ```bash
 cp infrastructure/terraform/crewmeister-app/local/terraform.tfvars.example infrastructure/terraform/crewmeister-app/local/terraform.tfvars
 ```
-Edit `terraform.tfvars` and set your MySQL password. To enable Prometheus scraping, set `service_monitor_enabled = true` in `infrastructure/terraform/crewmeister-app/local/main.tf` — requires the monitoring stack to be deployed first.
+Edit `terraform.tfvars` and set your MySQL password. To enable Prometheus scraping, set `service_monitor_enabled = true` in `terraform.tfvars` — requires the monitoring stack to be deployed first.
 
 ```bash
 cd infrastructure/terraform/crewmeister-app/local
@@ -429,6 +429,95 @@ Then test the API using the same port-forward steps in the [Kubernetes Deploymen
 ```bash
 cd infrastructure/terraform/crewmeister-app/local && terraform destroy
 cd infrastructure/terraform/monitoring/local && terraform destroy
+```
+
+### Cloud Deployment (AWS EKS)
+
+#### Prerequisites
+
+**1. AWS credentials**
+
+Ensure AWS credentials are configured and have permissions for: `eks:DescribeCluster`, `s3:*` on the state bucket, `dynamodb:GetItem/PutItem/DeleteItem` on the lock table.
+
+```bash
+aws configure   # or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+```
+
+**2. S3 bucket for Terraform state**
+
+```bash
+aws s3api create-bucket \
+  --bucket <your-state-bucket> \
+  --region eu-central-1 \
+  --create-bucket-configuration LocationConstraint=eu-central-1
+
+aws s3api put-public-access-block \
+  --bucket <your-state-bucket> \
+  --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+```
+
+**3. DynamoDB table for state locking**
+
+```bash
+aws dynamodb create-table \
+  --table-name <your-lock-table> \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region eu-central-1
+```
+
+**4. Update backend configuration**
+
+Set the real bucket and table names in both `backend.tf` files:
+- `infrastructure/terraform/crewmeister-app/production/backend.tf`
+- `infrastructure/terraform/monitoring/production/backend.tf`
+
+**5. Create `terraform.tfvars` from examples**
+
+```bash
+cp infrastructure/terraform/monitoring/production/terraform.tfvars.example \
+   infrastructure/terraform/monitoring/production/terraform.tfvars
+
+cp infrastructure/terraform/crewmeister-app/production/terraform.tfvars.example \
+   infrastructure/terraform/crewmeister-app/production/terraform.tfvars
+```
+
+Edit both files and set your EKS cluster name and passwords.
+
+#### Deploy
+
+Monitoring must be deployed first — it installs the `ServiceMonitor` CRD.
+
+```bash
+cd infrastructure/terraform/monitoring/production
+terraform init
+terraform apply
+
+cd infrastructure/terraform/crewmeister-app/production
+terraform init
+terraform apply
+```
+
+Both modules connect to EKS directly via AWS APIs — no kubeconfig needed.
+
+**Verify**
+```bash
+kubectl get pods --context <your-cluster-context>
+kubectl get pods -n monitoring --context <your-cluster-context>
+```
+
+**Access services via port-forward**
+```bash
+kubectl port-forward svc/crewmeister-app-service 8080:8080 --context <your-cluster-context>
+kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80 --context <your-cluster-context>
+kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090 --context <your-cluster-context>
+```
+
+**Destroying the deployments**
+```bash
+cd infrastructure/terraform/crewmeister-app/production && terraform destroy
+cd infrastructure/terraform/monitoring/production && terraform destroy
 ```
 
 ---

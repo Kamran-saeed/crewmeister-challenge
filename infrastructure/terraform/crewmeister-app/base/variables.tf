@@ -38,3 +38,13 @@ variable "service_monitor_enabled" {
   description = "Enable ServiceMonitor for Prometheus scraping — requires kube-prometheus-stack deployed first"
   type        = bool
 }
+
+variable "wait" {
+  description = "Wait for all pods to be ready before marking the release as successful"
+  type        = bool
+}
+
+variable "timeout" {
+  description = "Timeout in seconds for Helm operations"
+  type        = number
+}

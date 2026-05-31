@@ -7,7 +7,10 @@ module "app" {
   app_tag                 = "latest"
   app_pull_policy         = "Always"
   mysql_storage           = "10Gi"
-  service_monitor_enabled = false
+  service_monitor_enabled = var.service_monitor_enabled
 
   mysql_password = var.mysql_password
+
+  wait    = false
+  timeout = 300
 }

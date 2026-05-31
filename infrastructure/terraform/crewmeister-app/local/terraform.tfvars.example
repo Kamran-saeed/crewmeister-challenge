@@ -1,1 +1,2 @@
-mysql_password = "your_local_password"
+mysql_password          = "your_local_password"
+service_monitor_enabled = true

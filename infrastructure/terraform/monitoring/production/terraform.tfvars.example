@@ -1,1 +1,2 @@
+cluster_name           = "your-eks-cluster-name"
 grafana_admin_password = "your_strong_production_password"

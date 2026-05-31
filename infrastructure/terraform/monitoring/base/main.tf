@@ -14,7 +14,7 @@ resource "helm_release" "monitoring" {
     })
   ]
 
-  timeout       = 600
-  wait          = true
-  wait_for_jobs = true
+  timeout       = var.timeout
+  wait          = var.wait
+  wait_for_jobs = var.wait
 }
