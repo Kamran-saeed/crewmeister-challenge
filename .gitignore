@@ -5,14 +5,14 @@ target/
 .env
 
 ### Helm environment values ###
-helm/environments/**/values.yaml
-helm/environments/**/monitoring-values.yaml
+kubernetes/helm/environments/**/values.yaml
+kubernetes/helm/environments/**/monitoring-values.yaml
 
 ### Terraform ###
-terraform/**/.terraform/
-terraform/**/terraform.tfstate
-terraform/**/terraform.tfstate.backup
-terraform/**/terraform.tfvars
+infrastructure/terraform/**/.terraform/
+infrastructure/terraform/**/terraform.tfstate
+infrastructure/terraform/**/terraform.tfstate.backup
+infrastructure/terraform/**/terraform.tfvars
 # terraform/**/.terraform.lock.hcl  # intentionally committed — pins provider versions
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/

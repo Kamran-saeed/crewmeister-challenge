@@ -41,57 +41,22 @@ Architecture diagrams are provided per deployment environment. Each section belo
 
 ```
 .
-├── src/                              # Application source code
-├── Dockerfile                        # Multi-stage build — JDK for building, JRE for running
-├── docker-compose.yml                # Local development stack — app + MySQL + Prometheus + Grafana
-├── .env.example                      # Environment variable template
-├── .github/
-│   └── workflows/
-│       └── ci.yml                    # GitHub Actions — test, build, push to GHCR
-├── monitoring/                             # Monitoring config for Docker Compose setup
-│   ├── prometheus.yml                      # Prometheus scrape config
-│   └── grafana/
-│       └── provisioning/
-│           ├── datasources/
-│           │   └── prometheus.yml          # Auto-provisions Prometheus datasource
-│           └── dashboards/
-│               ├── dashboards.yml          # Tells Grafana where to load dashboard files
-│               └── spring-boot-monitor.json  # Spring Boot 2.1 System Monitor dashboard
-├── helm/
-│   ├── crewmeister/                        # Helm chart — reusable, environment-agnostic
-│   │   ├── Chart.yaml                      # Chart metadata
-│   │   ├── values.yaml                     # Default values
-│   │   └── templates/
-│   │       ├── secret.yaml                 # MySQL password as Kubernetes Secret
-│   │       ├── configmap.yaml              # Non-sensitive config — JDBC URL, username
-│   │       ├── app-deployment.yaml         # Spring Boot deployment with init container
-│   │       ├── app-service.yaml            # Exposes app inside the cluster
-│   │       ├── mysql-deployment.yaml       # MySQL deployment with probes and PVC mount
-│   │       ├── mysql-service.yaml          # Exposes MySQL inside the cluster
-│   │       ├── mysql-pvc.yaml              # Persistent storage for MySQL data
-│   │       └── servicemonitor.yaml         # Prometheus scrape target (optional — toggle in values)
-│   └── environments/                       # Environment-specific values
-│       ├── local/
-│       │   ├── values.yaml                 # Local overrides (not committed)
-│       │   ├── values.yaml.example         # Template for local setup
-│       │   ├── monitoring-values.yaml      # kube-prometheus-stack overrides (not committed)
-│       │   └── monitoring-values.yaml.example  # Template for monitoring setup
-│       └── production/
-│           └── values.yaml.example         # Template for production setup
-├── terraform/
-│   ├── app/                                # Deploys the crewmeister Helm release
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   ├── terraform.tfvars                # Actual values — not committed
-│   │   ├── terraform.tfvars.example        # Template for variable values
-│   │   └── .terraform.lock.hcl            # Provider version lock file
-│   └── monitoring/                         # Deploys kube-prometheus-stack
-│       ├── main.tf
-│       ├── variables.tf
-│       ├── terraform.tfvars                # Actual values — not committed
-│       ├── terraform.tfvars.example        # Template for variable values
-│       └── .terraform.lock.hcl            # Provider version lock file
-└── pom.xml                                 # Maven dependencies and build configuration
+├── src/                    # Spring Boot application source code
+├── Dockerfile              # Multi-stage build — compile with JDK, run with JRE
+├── docker-compose.yml      # Local stack — app, MySQL, Prometheus, Grafana
+├── .env.example            # Environment variable template
+├── pom.xml                 # Maven build and dependency config
+├── .github/workflows/      # GitHub Actions CI pipeline
+├── configs/
+│   └── monitoring/         # Prometheus and Grafana config for Docker Compose
+├── kubernetes/
+│   └── helm/
+│       ├── crewmeister/    # Helm chart — app + MySQL deployments, ServiceMonitor
+│       └── environments/   # Environment-specific values (local, production)
+└── infrastructure/
+    └── terraform/
+        ├── app/            # Terraform module — deploys crewmeister Helm release
+        └── monitoring/     # Terraform module — deploys kube-prometheus-stack
 ```
 
 ---
@@ -170,11 +135,6 @@ docker compose up --build
 
 The first run takes a few minutes — Maven downloads all dependencies inside the build container. Subsequent builds are faster due to layer caching.
 
-Wait for this line before making requests:
-```
-app  | Started CrewmeisterChallengeApplication
-```
-
 **4. Test the API**
 
 ```bash
@@ -191,6 +151,9 @@ curl -X POST http://localhost:8080/user \
 # Health check
 curl http://localhost:8080/actuator/health
 # {"status":"UP"}
+
+# Prometheus metrics
+curl http://localhost:8080/actuator/prometheus
 ```
 
 **Stopping the stack**
@@ -263,10 +226,10 @@ All configurable values live in `values.yaml`. Environment-specific overrides go
 
 | File | Used for | Committed |
 |---|---|---|
-| `helm/crewmeister/values.yaml` | Defaults — base configuration | Yes |
-| `helm/environments/local/values.yaml` | Minikube — local image, `Never` pull policy, real password | No — in `.gitignore` |
-| `helm/environments/local/values.yaml.example` | Template for local setup | Yes |
-| `helm/environments/production/values.yaml.example` | Template for production setup | Yes |
+| `kubernetes/helm/crewmeister/values.yaml` | Defaults — base configuration | Yes |
+| `kubernetes/helm/environments/local/values.yaml` | Minikube — local image, `Never` pull policy, real password | No — in `.gitignore` |
+| `kubernetes/helm/environments/local/values.yaml.example` | Template for local setup | Yes |
+| `kubernetes/helm/environments/production/values.yaml.example` | Template for production setup | Yes |
 
 ### Local Kubernetes Deployment (minikube)
 
@@ -275,13 +238,7 @@ All configurable values live in `values.yaml`. Environment-specific overrides go
 minikube start
 ```
 
-**2. Configure local Helm values**
-```bash
-cp helm/environments/local/values.yaml.example helm/environments/local/values.yaml
-```
-Edit `helm/environments/local/values.yaml` and set your MySQL password. This file is in `.gitignore` and will never be committed.
-
-**3. Build the app image and load it into minikube**
+**2. Build the app image and load it into minikube**
 
 Since minikube runs its own isolated Docker environment, the locally built image must be explicitly loaded in:
 ```bash
@@ -289,24 +246,58 @@ docker compose build
 minikube image load crewmeister-challenge-app:latest
 ```
 
-**4. Deploy with Helm**
+**3. Configure and deploy the monitoring stack**
+
+The monitoring stack must be deployed first — it installs the `ServiceMonitor` CRD that the app chart depends on.
+
 ```bash
-helm install crewmeister ./helm/crewmeister -f ./helm/environments/local/values.yaml
+cp kubernetes/helm/environments/local/monitoring-values.yaml.example kubernetes/helm/environments/local/monitoring-values.yaml
+```
+
+Edit `kubernetes/helm/environments/local/monitoring-values.yaml` and set your Grafana admin password. This file is in `.gitignore` and will never be committed.
+
+Then add the Helm repo and deploy:
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm install monitoring prometheus-community/kube-prometheus-stack \
+  --version 86.1.0 \
+  -f ./kubernetes/helm/environments/local/monitoring-values.yaml \
+  --namespace monitoring --create-namespace
+```
+
+Wait for all monitoring pods to be ready (this takes 2–3 minutes on first run):
+```bash
+kubectl get pods -n monitoring
+```
+
+**4. Configure and deploy the app**
+
+```bash
+cp kubernetes/helm/environments/local/values.yaml.example kubernetes/helm/environments/local/values.yaml
+```
+
+Edit `kubernetes/helm/environments/local/values.yaml` and set your MySQL password. This file is in `.gitignore` and will never be committed.
+
+The app chart includes an optional `ServiceMonitor` resource — a Kubernetes CRD that tells the Prometheus operator to scrape the app's `/actuator/prometheus` endpoint. It is disabled by default. For monitoring, enable it, set the following in your `values.yaml`:
+
+```yaml
+serviceMonitor:
+  enabled: true
+```
+
+Then deploy:
+```bash
+helm install crewmeister ./kubernetes/helm/crewmeister -f ./kubernetes/helm/environments/local/values.yaml
 ```
 
 **5. Verify pods are running**
 ```bash
 kubectl get pods
+kubectl get pods -n monitoring
 ```
 
-Both pods should reach `1/1 Running`. The app pod will show `Init:0/1` briefly while the init container waits for MySQL, then transition to `Running`.
-
-Expected output:
-```
-NAME                                  READY   STATUS    RESTARTS   AGE
-crewmeister-app-xxx                   1/1     Running   0          60s
-crewmeister-mysql-xxx                 1/1     Running   0          60s
-```
+App pods should reach `1/1 Running`. The app pod will show `Init:0/1` briefly while the init container waits for MySQL, then transition to `Running`.
 
 **6. Test the API**
 
@@ -327,16 +318,33 @@ curl -X POST http://localhost:8080/user \
 
 curl http://localhost:8080/actuator/health
 # {"status":"UP"}
+
+# Prometheus metrics
+curl http://localhost:8080/actuator/prometheus
 ```
 
-**Upgrading the release**
+**7. Access monitoring**
+
 ```bash
-helm upgrade crewmeister ./helm/crewmeister -f ./helm/environments/local/values.yaml
+# Grafana
+kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
+
+# Prometheus (in a separate terminal)
+kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090
 ```
 
-**Removing the release**
+Open `http://localhost:3000` and log in with your Grafana admin credentials. To verify Prometheus is scraping the app, open `http://localhost:9090/targets` — the `crewmeister-app` target should show `State: UP`.
+
+**Upgrading the app release**
+```bash
+helm upgrade crewmeister ./kubernetes/helm/crewmeister -f ./kubernetes/helm/environments/local/values.yaml
+```
+
+**Removing the releases**
 ```bash
 helm uninstall crewmeister
+helm uninstall monitoring -n monitoring
+kubectl delete namespace monitoring
 ```
 
 ---
@@ -345,28 +353,36 @@ helm uninstall crewmeister
 
 Terraform manages Helm releases as infrastructure as code using the Helm and Kubernetes providers. Both providers connect to the cluster via the active kubeconfig context — switching context is all that's needed to target a different cluster.
 
-The setup is split into two independent modules — `terraform/app/` and `terraform/monitoring/` — each with its own state file and lifecycle. This means you can deploy, update, or destroy the monitoring stack without touching the application deployment.
+The setup is split into two independent modules — `infrastructure/terraform/app/` and `infrastructure/terraform/monitoring/` — each with its own state file and lifecycle. This means you can deploy, update, or destroy the monitoring stack without touching the application deployment.
 
 The Helm chart is referenced by local path since it lives in the same repository. In a production setup the chart would be published to a registry and versioned independently.
 
 ### Modules
 
-**`terraform/app/`** — deploys the crewmeister Helm release (Spring Boot app + MySQL).
+**`infrastructure/terraform/app/`** — deploys the crewmeister Helm release (Spring Boot app + MySQL).
 
 | File | Purpose | Committed |
 |---|---|---|
-| `main.tf` | Providers and `helm_release` resource | Yes |
+| `versions.tf` | Terraform and provider version constraints | Yes |
+| `providers.tf` | Helm and Kubernetes provider configuration | Yes |
+| `main.tf` | `helm_release` resource | Yes |
 | `variables.tf` | Input variable declarations | Yes |
+| `outputs.tf` | Outputs — release name, namespace, status | Yes |
+| `templates/values.yaml.tpl` | Helm values template rendered from Terraform variables | Yes |
 | `terraform.tfvars` | Actual values — includes MySQL password | No — in `.gitignore` |
 | `terraform.tfvars.example` | Template for variable values | Yes |
 | `.terraform.lock.hcl` | Pins exact provider versions for reproducible installs | Yes |
 
-**`terraform/monitoring/`** — deploys kube-prometheus-stack (Prometheus + Grafana + exporters).
+**`infrastructure/terraform/monitoring/`** — deploys kube-prometheus-stack (Prometheus + Grafana + exporters).
 
 | File | Purpose | Committed |
 |---|---|---|
-| `main.tf` | Providers and `helm_release` for kube-prometheus-stack | Yes |
+| `versions.tf` | Terraform and provider version constraints | Yes |
+| `providers.tf` | Helm and Kubernetes provider configuration | Yes |
+| `main.tf` | `helm_release` resource for kube-prometheus-stack | Yes |
 | `variables.tf` | Input variable declarations | Yes |
+| `outputs.tf` | Outputs — release name, namespace, status | Yes |
+| `templates/values.yaml.tpl` | Helm values template rendered from Terraform variables | Yes |
 | `terraform.tfvars` | Actual values — includes Grafana admin password | No — in `.gitignore` |
 | `terraform.tfvars.example` | Template for variable values | Yes |
 | `.terraform.lock.hcl` | Pins exact provider versions for reproducible installs | Yes |
@@ -377,13 +393,12 @@ Monitoring must be deployed first — it installs the `ServiceMonitor` CRD that 
 
 **1. Deploy monitoring stack**
 ```bash
-cp terraform/monitoring/terraform.tfvars.example terraform/monitoring/terraform.tfvars
-cp helm/environments/local/monitoring-values.yaml.example helm/environments/local/monitoring-values.yaml
+cp infrastructure/terraform/monitoring/terraform.tfvars.example infrastructure/terraform/monitoring/terraform.tfvars
 ```
-Edit `terraform/monitoring/terraform.tfvars` and set your Grafana admin password and kubeconfig context.
+Edit `infrastructure/terraform/monitoring/terraform.tfvars` and set your Grafana admin password and kubeconfig context. All Helm values are rendered from this file — no separate values YAML needed.
 
 ```bash
-cd terraform/monitoring
+cd infrastructure/terraform/monitoring
 terraform init
 terraform apply
 ```
@@ -392,12 +407,12 @@ Terraform deploys kube-prometheus-stack into the `monitoring` namespace and wait
 
 **2. Deploy the application**
 ```bash
-cp terraform/app/terraform.tfvars.example terraform/app/terraform.tfvars
+cp infrastructure/terraform/app/terraform.tfvars.example infrastructure/terraform/app/terraform.tfvars
 ```
-Edit `terraform/app/terraform.tfvars` and set your MySQL password and kubeconfig context.
+Edit `infrastructure/terraform/app/terraform.tfvars` and set your MySQL password and kubeconfig context. To enable Prometheus scraping, set `service_monitor_enabled = true` — this requires the monitoring stack to already be deployed.
 
 ```bash
-cd terraform/app
+cd infrastructure/terraform/app
 terraform init
 terraform apply
 ```
@@ -412,8 +427,8 @@ Then test the API using the same port-forward steps in the [Kubernetes Deploymen
 
 **Destroying the deployments**
 ```bash
-cd terraform/app && terraform destroy
-cd terraform/monitoring && terraform destroy
+cd infrastructure/terraform/app && terraform destroy
+cd infrastructure/terraform/monitoring && terraform destroy
 ```
 
 ### Switching Clusters
@@ -509,10 +524,11 @@ The SHA tag provides traceability — you can identify exactly which commit prod
 The pipeline stops at image push. Deploying to a cluster is a manual step:
 
 ```bash
-# update the image tag in your values file, then:
-helm upgrade crewmeister ./helm/crewmeister -f ./helm/environments/local/values.yaml
-# or via Terraform:
-terraform apply
+# via Helm:
+helm upgrade crewmeister ./kubernetes/helm/crewmeister -f ./kubernetes/helm/environments/local/values.yaml
+
+# via Terraform — update app_tag in terraform.tfvars, then:
+cd infrastructure/terraform/app && terraform apply
 ```
 
 In a production setup the deploy step would be automated as a third job, gated on the `build-and-push` job and targeting a cloud cluster via kubeconfig stored as a GitHub Actions secret.
@@ -601,13 +617,13 @@ The pre-loaded dashboard is **Spring Boot 2.1 System Monitor** — it shows JVM 
 
 The app Helm chart includes an optional `ServiceMonitor` resource — a Kubernetes CRD that tells the Prometheus operator which pods to scrape and how. It is disabled by default (`serviceMonitor.enabled: false`) and enabled in the local environment values.
 
-kube-prometheus-stack is deployed as a separate Terraform module (`terraform/monitoring/`) and includes: Prometheus operator, Prometheus, Grafana, kube-state-metrics, and node-exporter.
+kube-prometheus-stack is deployed as a separate Terraform module (`infrastructure/terraform/monitoring/`) and includes: Prometheus operator, Prometheus, Grafana, kube-state-metrics, and node-exporter.
 
 #### Accessing (after port-forward)
 
 ```bash
 # Grafana
-kubectl port-forward -n monitoring svc/monitoring-grafana 3001:80
+kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
 
 # Prometheus
 kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090
@@ -615,8 +631,9 @@ kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 909
 
 | Service | URL | Credentials |
 |---|---|---|
-| Grafana | `http://localhost:3001` | admin / (password from `terraform.tfvars`) |
+| Grafana | `http://localhost:3000` | admin / (password from `terraform.tfvars`) |
 | Prometheus | `http://localhost:9090` | — |
+| App metrics | `http://localhost:8080/actuator/prometheus` | — |
 
 To verify Prometheus is scraping the app, open `http://localhost:9090/targets` — the `crewmeister-app` target should show `State: UP`.
 

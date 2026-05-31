@@ -1,6 +1,0 @@
-mysql_password     = "your_password_here"
-kubeconfig_path    = "~/.kube/config"
-kubeconfig_context = "minikube"
-environment        = "local"
-release_name       = "crewmeister"
-namespace          = "default"

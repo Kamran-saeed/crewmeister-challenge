@@ -38,7 +38,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./configs/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
     depends_on:
       app:
         condition: service_healthy
@@ -51,7 +51,7 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
     volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./configs/monitoring/grafana/provisioning:/etc/grafana/provisioning
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus

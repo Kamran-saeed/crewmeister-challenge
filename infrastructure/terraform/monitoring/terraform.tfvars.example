@@ -1,0 +1,8 @@
+kubeconfig_path    = "~/.kube/config"
+kubeconfig_context = "minikube"
+namespace          = "monitoring"
+
+grafana_admin_password = "your_grafana_password_here"
+
+alertmanager_enabled                          = false
+service_monitor_selector_nil_uses_helm_values = false
