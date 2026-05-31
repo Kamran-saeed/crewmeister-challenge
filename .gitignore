@@ -6,13 +6,14 @@ target/
 
 ### Helm environment values ###
 helm/environments/**/values.yaml
+helm/environments/**/monitoring-values.yaml
 
 ### Terraform ###
-terraform/.terraform/
-terraform/terraform.tfstate
-terraform/terraform.tfstate.backup
-terraform/terraform.tfvars
-# terraform/.terraform.lock.hcl  # intentionally committed — pins provider versions
+terraform/**/.terraform/
+terraform/**/terraform.tfstate
+terraform/**/terraform.tfstate.backup
+terraform/**/terraform.tfvars
+# terraform/**/.terraform.lock.hcl  # intentionally committed — pins provider versions
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

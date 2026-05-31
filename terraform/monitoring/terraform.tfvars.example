@@ -1,0 +1,5 @@
+grafana_admin_password = "your_grafana_password_here"
+kubeconfig_path        = "~/.kube/config"
+kubeconfig_context     = "minikube"
+environment            = "local"
+namespace              = "monitoring"

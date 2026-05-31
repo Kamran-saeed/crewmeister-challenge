@@ -13,3 +13,6 @@ mysql:
   username: root
   password: ""
   storage: 1Gi
+
+serviceMonitor:
+  enabled: false
