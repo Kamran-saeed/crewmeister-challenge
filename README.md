@@ -7,13 +7,13 @@ A Spring Boot REST API with MySQL, containerized with Docker and deployable via 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Architecture](#architecture)
 - [Project Structure](#project-structure)
 - [Prerequisites](#prerequisites)
-- [Local Setup](#local-setup)
-- [Kubernetes Deployment](#kubernetes-deployment)
-- [Terraform](#terraform)
+- [Local Deployment](#local-deployment)
+- [Production Deployment](#production-deployment)
 - [CI/CD Pipeline](#cicd-pipeline)
+  - [CI — Build and Push](#ci--build-and-push)
+  - [CD — Terraform Deploy](#cd--terraform-deploy)
 - [Monitoring](#monitoring)
 
 ---
@@ -31,12 +31,6 @@ Spring Boot REST API that manages users, backed by MySQL. The application uses F
 
 ---
 
-## Architecture
-
-Architecture diagrams are provided per deployment environment. Each section below contains its own diagram relevant to that setup.
-
----
-
 ## Project Structure
 
 ```
@@ -46,462 +40,86 @@ Architecture diagrams are provided per deployment environment. Each section belo
 ├── docker-compose.yml      # Local stack — app, MySQL, Prometheus, Grafana
 ├── .env.example            # Environment variable template
 ├── pom.xml                 # Maven build and dependency config
-├── .github/workflows/      # GitHub Actions CI pipeline
+├── .github/workflows/
+│   ├── ci.yml              # CI — test + build + push to GHCR on every push to main
+│   └── terraform-deploy.yml # CD — workflow_dispatch plan/apply dropdown for EKS deployment
 ├── configs/
 │   └── monitoring/         # Prometheus and Grafana config for Docker Compose
 ├── kubernetes/
 │   └── helm/
 │       ├── crewmeister/    # Helm chart — app + MySQL deployments, ServiceMonitor
 │       └── environments/   # Environment-specific values (local, production)
+├── docs/
+│   ├── prerequisites.md         # Required tools and AWS resources (S3, DynamoDB) — read first
+│   ├── local-docker.md          # Docker Compose setup and commands
+│   ├── local-kubernetes.md      # Raw Helm and Terraform local deployment steps
+│   └── production-deployment.md # EKS-specific prerequisites, deploy steps, verify, monitoring access
 └── infrastructure/
     └── terraform/
         ├── crewmeister-app/    # Terraform — deploys crewmeister Helm release
         │   ├── base/           # Reusable module (helm_release + templatefile)
         │   ├── local/          # Minikube environment root — calls base/
         │   └── production/     # Production environment root — calls base/, S3 backend
-        └── monitoring/         # Terraform — deploys kube-prometheus-stack
-            ├── base/           # Reusable module (helm_release + templatefile)
-            ├── local/          # Minikube environment root — calls base/
-            └── production/     # Production environment root — calls base/, S3 backend
+        ├── monitoring/         # Terraform — deploys kube-prometheus-stack
+        │   ├── base/           # Reusable module (helm_release + templatefile)
+        │   ├── local/          # Minikube environment root — calls base/
+        │   └── production/     # Production environment root — calls base/, S3 backend
+        └── github-runner/      # Terraform — self-hosted runner EC2 + GitHub OIDC IAM role + EKS access entry
 ```
 
 ---
 
 ## Prerequisites
 
-### Local Development
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-
-Maven and Java do not need to be installed locally — the build happens inside Docker.
-
-### Kubernetes Deployment
-- `kubectl`
-- `helm`
-- `terraform >= 1.9.0` — versions below 1.9.0 have an expired GPG key issue with provider installation
-- `minikube` — for local Kubernetes cluster
+See **[docs/prerequisites.md](docs/prerequisites.md)** for required tools (Docker, kubectl, helm, terraform, minikube) and required AWS resources (credentials, S3 state bucket, DynamoDB lock table).
 
 ---
 
-## Local Setup
+## Local Deployment
 
-### Architecture
+Two options — Docker Compose for a quick local dev stack, or minikube for a full Kubernetes environment.
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                         Docker Network                            │
-│                                                                   │
-│  ┌──────────────────┐       ┌──────────────────┐                 │
-│  │   Spring Boot    │──────►│      MySQL        │                 │
-│  │   :8080          │       │      :3306        │                 │
-│  └────────┬─────────┘       └──────────────────┘                 │
-│           │ /actuator/prometheus                                  │
-│           ▼                                                       │
-│  ┌──────────────────┐       ┌──────────────────┐                 │
-│  │   Prometheus     │──────►│     Grafana       │                 │
-│  │   :9090          │       │     :3000         │                 │
-│  └──────────────────┘       └──────────────────┘                 │
-│                                                                   │
-└──────────────────────────┬───────────────────────────────────────┘
-                           │
-          ┌────────────────┼──────────────────┐
-          ▼                ▼                  ▼
-   localhost:8080    localhost:9090     localhost:3000
-   (API requests)   (Prometheus UI)   (Grafana dashboards)
-```
+### Docker Compose
 
-All services run inside the same Docker network and communicate using service names as hostnames. On startup, Flyway automatically runs the database migration, creating the `user` table and seeding an initial record. Prometheus starts only after the app is healthy, and Grafana's datasource and dashboard are provisioned automatically — no manual setup needed.
+Runs Spring Boot, MySQL, Prometheus, and Grafana in a single Docker network. Grafana and the Prometheus datasource are provisioned automatically on first start.
 
-**1. Clone the repository**
-```bash
-git clone https://github.com/Kamran-saeed/crewmeister-challenge.git
-cd crewmeister-challenge
-```
+Full setup guide: **[docs/local-docker.md](docs/local-docker.md)**
 
-**2. Configure environment variables**
+### Kubernetes (minikube)
 
-All variables are defined in `.env`. Never commit this file — it is listed in `.gitignore`. Use `.env.example` as the template.
+Deploys the full Helm chart to a local minikube cluster — app, MySQL StatefulSet, and kube-prometheus-stack for monitoring. Two methods are available: raw Helm commands or Terraform.
 
-| Variable | Description | Example |
-|---|---|---|
-| `MYSQL_ROOT_PASSWORD` | MySQL root password | `dev` |
-| `MYSQL_DATABASE` | Database name | `challenge` |
-| `MYSQL_USERNAME` | MySQL username | `root` |
-| `GRAFANA_ADMIN_USER` | Grafana admin username | `admin` |
-| `GRAFANA_ADMIN_PASSWORD` | Grafana admin password | `admin` |
-
-```bash
-cp .env.example .env
-```
-Edit `.env` with your preferred values.
-
-**3. Start the stack**
-```bash
-docker compose up --build
-```
-
-The first run takes a few minutes — Maven downloads all dependencies inside the build container. Subsequent builds are faster due to layer caching.
-
-**4. Test the API**
-
-```bash
-# Fetch a user by ID
-curl "http://localhost:8080/user?id=1"
-# Greetings from Crewmeister, Alice!
-
-# Create a new user
-curl -X POST http://localhost:8080/user \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Muhammad"}'
-# Greetings from Crewmeister, Muhammad!
-
-# Health check
-curl http://localhost:8080/actuator/health
-# {"status":"UP"}
-
-# Prometheus metrics
-curl http://localhost:8080/actuator/prometheus
-```
-
-**Stopping the stack**
-```bash
-docker compose down
-```
-
-To also remove the database volume (wipes all data):
-```bash
-docker compose down -v
-```
+Full guide (both methods): **[docs/local-kubernetes.md](docs/local-kubernetes.md)**
 
 ---
 
-## Kubernetes Deployment
+## Production Deployment
 
-The Helm chart supports two deployment environments — local (minikube) and production (EKS). Both share the same chart. Environment-specific behaviour is controlled entirely through values.
+Deploys to AWS EKS using Terraform. The Helm chart is the same as local — production-specific features are enabled via values:
 
-The app pod includes an init container that blocks Spring Boot from starting until MySQL is confirmed reachable — eliminating crash-restart loops on startup.
+| Feature | Local | Production (EKS) |
+|---|:---:|:---:|
+| K8s Secret (password from values) | ✓ | ✗ |
+| External Secrets (ESO + AWS Secrets Manager) | ✗ | ✓ |
+| HPA (min 3 / max 10 pods, cpu 50%) | ✗ | ✓ |
+| Ingress (NGINX, HTTPS via ACM) | ✗ | ✓ |
+| ServiceMonitor (Prometheus scraping) | optional | ✓ |
 
-The app runs under a dedicated `ServiceAccount` with `automountServiceAccountToken: false` — no Kubernetes API token is mounted into the container, following the principle of least privilege.
+Terraform connects to EKS directly via AWS APIs — no kubeconfig needed. Each component (`crewmeister-app`, `monitoring`) has its own state file so they can be deployed and destroyed independently.
 
-The app container declares CPU and memory requests and limits, giving it `Burstable` QoS class. This ensures the scheduler places pods correctly, prevents noisy-neighbour resource contention, and enables HPA to calculate CPU utilisation accurately.
-
-MySQL runs as a `StatefulSet` rather than a Deployment. StatefulSet gives each pod a stable identity (`mysql-0`) and a stable DNS name via a headless service (`mysql-0.mysql-headless`). Each pod gets its own `PersistentVolumeClaim` via `volumeClaimTemplates` — the PVC is bound to the pod's identity and follows it across restarts, even in multi-AZ clusters where EBS volumes are zone-specific.
-
-### Values and Overrides
-
-All configurable values live in `values.yaml`. Environment-specific overrides go in separate files — only the values that differ from defaults need to be specified.
-
-| File | Purpose |
-|---|---|
-| `kubernetes/helm/crewmeister/values.yaml` | Defaults — base configuration, all features disabled |
-| `kubernetes/helm/environments/local/values.yaml` | Minikube overrides — gitignored, created from `.example` |
-| `kubernetes/helm/environments/local/values.yaml.example` | Template for local setup |
-| `kubernetes/helm/environments/production/values.yaml.example` | Template for production setup |
-
-The table below shows which features are enabled per deployment method:
-
-| Feature | Raw Helm (minikube) | Terraform local (minikube) | Terraform prod (EKS) |
-|---|:---:|:---:|:---:|
-| K8s Secret (password from values) | ✓ | ✓ | ✗ |
-| External Secrets (ESO + AWS) | ✗ | ✗ | ✓ |
-| HPA (autoscaling) | ✗ | ✗ | ✓ |
-| Ingress (NGINX) | ✗ | ✗ | ✓ |
-| ServiceMonitor (Prometheus) | optional | optional | ✓ |
-| Fixed replica count | ✓ (1) | ✓ (1) | ✗ (HPA owns it) |
-
-### Local Kubernetes Deployment (minikube)
-
-#### Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Minikube Cluster                           │
-│                                                                   │
-│  ┌──────────────────┐   ┌──────────────────────────────────────┐  │
-│  │    ConfigMap     │   │           K8s Secret                 │  │
-│  │  JDBC URL        │   │  mysql-password (from tfvars)        │  │
-│  │  DB name         │   └─────────────────┬────────────────────┘  │
-│  │  username        │                     │                       │
-│  └────────┬─────────┘                     │                       │
-│           │                               │                       │
-│  ┌────────▼───────────────────────────────▼──────────────────┐   │
-│  │                    app-deployment  (replicas: 1)           │   │
-│  │   serviceAccount: crewmeister-app (no API token)          │   │
-│  │   ┌────────────────────────────────────────────────────┐  │   │
-│  │   │  init container — waits for MySQL ready            │  │   │
-│  │   └────────────────────────────────────────────────────┘  │   │
-│  │   ┌────────────────────────────────────────────────────┐  │   │
-│  │   │  Spring Boot :8080                                 │  │   │
-│  │   │  resources: 100m/256Mi req  limits: 500m/512Mi     │  │   │
-│  │   │  liveness  → /actuator/health/liveness             │  │   │
-│  │   │  readiness → /actuator/health/readiness            │  │   │
-│  │   └────────────────────────────────────────────────────┘  │   │
-│  └────────────────────────┬──────────────────────────────────┘   │
-│                           │                                       │
-│  ┌────────────────────────▼──────────┐  ┌──────────────────────┐ │
-│  │   app-service (ClusterIP :8080)   │  │  mysql-statefulset   │ │
-│  └────────────────────────┬──────────┘  │  MySQL :3306         │ │
-│                           │             │  volumeClaimTemplates│ │
-│                           │             │  └── mysql-storage   │ │
-│                           │             └──────────┬───────────┘ │
-│                           │                        │             │
-│                           │             ┌──────────▼───────────┐ │
-│                           │             │  mysql-headless-svc  │ │
-│                           │             │  clusterIP: None     │ │
-│                           │             └──────────────────────┘ │
-└───────────────────────────┼───────────────────────────────────────┘
-                            │ kubectl port-forward :8080
-                            ▼
-                      localhost:8080
-```
-
-**1. Start minikube**
-```bash
-minikube start
-```
-
-**2. Build the app image and load it into minikube**
-
-Since minikube runs its own isolated Docker environment, the locally built image must be explicitly loaded in:
-```bash
-docker compose build
-minikube image load crewmeister-challenge-app:latest
-```
-
-**3. Configure and deploy the monitoring stack**
-
-The monitoring stack must be deployed first — it installs the `ServiceMonitor` CRD that the app chart depends on.
-
-```bash
-cp kubernetes/helm/environments/local/monitoring-values.yaml.example kubernetes/helm/environments/local/monitoring-values.yaml
-```
-
-Edit `kubernetes/helm/environments/local/monitoring-values.yaml` and set your Grafana admin password. This file is in `.gitignore` and will never be committed.
-
-Then add the Helm repo and deploy:
-```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-helm install monitoring prometheus-community/kube-prometheus-stack \
-  --version 86.1.0 \
-  -f ./kubernetes/helm/environments/local/monitoring-values.yaml \
-  --namespace monitoring --create-namespace
-```
-
-Wait for all monitoring pods to be ready (this takes 2–3 minutes on first run):
-```bash
-kubectl get pods -n monitoring
-```
-
-**4. Configure and deploy the app**
-
-```bash
-cp kubernetes/helm/environments/local/values.yaml.example kubernetes/helm/environments/local/values.yaml
-```
-
-Edit `kubernetes/helm/environments/local/values.yaml` and set your MySQL password. This file is in `.gitignore` and will never be committed.
-
-For local deployment, HPA, Ingress, and ESO are all disabled. The app runs with a fixed replica count of 1 and the MySQL password is passed directly via values. Optionally enable `serviceMonitor.enabled: true` if you deployed the monitoring stack.
-
-Then deploy:
-```bash
-helm install crewmeister ./kubernetes/helm/crewmeister -f ./kubernetes/helm/environments/local/values.yaml
-```
-
-**5. Verify pods are running**
-```bash
-kubectl get pods
-kubectl get pods -n monitoring
-```
-
-App pods should reach `1/1 Running`. The app pod will show `Init:0/1` briefly while the init container waits for MySQL, then transition to `Running`.
-
-**6. Test the API**
-
-Since services are `ClusterIP` (internal only), use port-forward to reach the app from your machine:
-```bash
-kubectl port-forward service/crewmeister-app-service 8080:8080
-```
-
-Then in a separate terminal:
-```bash
-curl "http://localhost:8080/user?id=1"
-# Greetings from Crewmeister, Alice!
-
-curl -X POST http://localhost:8080/user \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Muhammad"}'
-# Greetings from Crewmeister, Muhammad!
-
-curl http://localhost:8080/actuator/health
-# {"status":"UP"}
-
-# Prometheus metrics
-curl http://localhost:8080/actuator/prometheus
-```
-
-**7. Access monitoring**
-
-```bash
-# Grafana
-kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
-
-# Prometheus (in a separate terminal)
-kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090
-```
-
-Open `http://localhost:3000` and log in with your Grafana admin credentials. To verify Prometheus is scraping the app, open `http://localhost:9090/targets` — the `crewmeister-app` target should show `State: UP`.
-
-**Upgrading the app release**
-```bash
-helm upgrade crewmeister ./kubernetes/helm/crewmeister -f ./kubernetes/helm/environments/local/values.yaml
-```
-
-**Removing the releases**
-```bash
-helm uninstall crewmeister
-helm uninstall monitoring -n monitoring
-kubectl delete namespace monitoring
-```
-
----
-
-## Terraform
-
-Terraform manages Helm releases as infrastructure as code using the Helm and Kubernetes providers. Each component (`crewmeister-app`, `monitoring`) follows a `base` / environment pattern — `base/` contains all resource definitions, `local/` and `production/` are environment root modules that call `base/`, configure their own provider, and define their own backend. Each component has its own state file, so you can deploy, update, or destroy monitoring without touching the application.
-
-`local/` connects to minikube via kubeconfig. `production/` connects to EKS directly via AWS APIs — it uses `aws_eks_cluster` and `aws_eks_cluster_auth` data sources to fetch the cluster endpoint and auth token, so no kubeconfig file is needed on the machine running Terraform.
-
-The Helm chart is referenced by local path since it lives in the same repository. In a production setup the chart would be published to a registry and versioned independently.
-
-### Local Deployment (minikube)
-
-Monitoring must be deployed first — it installs the `ServiceMonitor` CRD that the app chart references.
-
-**1. Deploy monitoring stack**
-```bash
-cp infrastructure/terraform/monitoring/local/terraform.tfvars.example infrastructure/terraform/monitoring/local/terraform.tfvars
-```
-Edit `terraform.tfvars` and set your Grafana admin password.
-
-```bash
-cd infrastructure/terraform/monitoring/local
-terraform init
-terraform apply
-```
-
-Terraform deploys kube-prometheus-stack into the `monitoring` namespace and waits for all components to be ready (this takes 2–3 minutes on first run).
-
-**2. Deploy the application**
-```bash
-cp infrastructure/terraform/crewmeister-app/local/terraform.tfvars.example infrastructure/terraform/crewmeister-app/local/terraform.tfvars
-```
-Edit `terraform.tfvars` and set your MySQL password. To enable Prometheus scraping, set `service_monitor_enabled = true` in `terraform.tfvars` — requires the monitoring stack to be deployed first.
-
-```bash
-cd infrastructure/terraform/crewmeister-app/local
-terraform init
-terraform apply
-```
-
-**3. Verify pods are running**
-```bash
-kubectl get pods
-kubectl get pods -n monitoring
-```
-
-Then test the API using the same port-forward steps in the [Kubernetes Deployment](#kubernetes-deployment) section.
-
-**Destroying the deployments**
-```bash
-cd infrastructure/terraform/crewmeister-app/local && terraform destroy
-cd infrastructure/terraform/monitoring/local && terraform destroy
-```
-
-### Cloud Deployment (AWS EKS)
-
-#### Architecture
-
-```
-                                     ┌───────────────────────────────────────────────────────────────────────┐
-                                     │  EKS Cluster                                                          │
-                                     │                                                                       │
-  Browser                            │  ┌──────────────┐   ┌─────────────────────────────┐   ┌─────────────┐ │
-     │ HTTPS                         │  │   ConfigMap  │   │  ESO ExternalSecret         │   │   MySQL     │ │
-     ▼                               │  │  JDBC URL    │   │  SecretStore → AWS Secrets  │   │ StatefulSet │ │
-  Route53                            │  │  DB name     │   │  Manager → K8s Secret       │   │  mysql-0    │ │
-  *.domain.com                       │  │  username    │   │  (syncs every 1h)           │   │  10Gi EBS   │ │
-     │                               │  └──────┬───────┘   └──────────────┬──────────────┘   │  headless   │ │
-     ▼                               │         │                          │                  │  DNS        │ │
-  NLB + ACM cert                     │         └──────────────┬───────────┘                  └──────┬──────┘ │
-     │ HTTP                          │                        ▼                                     │        │
-     ▼                               │         ┌─────────────────────────────┐                      │        │
-  NGINX Ingress ──────────────────►  │         │  HPA  min:3 max:10 cpu:50%  │                      │        │
-  (routes by Host header)            │         └──────────────┬──────────────┘                      │        │
-                                     │                        │ scales                              │        │
-                                     │         ┌──────────────▼──────────────┐                      │        │
-                                     │         │   app-deployment (3 pods)   │                      │        │
-                                     │         │   Spring Boot :8080         │◄────────────────────-┘        │
-                                     │         │   ServiceAccount (no token) │  mysql-0.mysql-headless DNS   │
-                                     │         │   liveness/readiness probes │                               │ 
-                                     │         └──────────────┬──────────────┘                               │
-                                     │                        │                                              │
-                                     │         ┌──────────────▼──────────────┐                               │
-                                     │         │   app-service  ClusterIP    │                               │
-                                     │         └─────────────────────────────┘                               │
-                                     └─────────────────────────────────────────────────────────────────────--┘
-```
-
-#### Prerequisites
-
-See **[docs/production-prerequisites.md](docs/production-prerequisites.md)** for the full setup guide covering: AWS credentials, S3/DynamoDB backend, EKS cluster requirements (NGINX ingress, EBS CSI, metrics-server, ESO), Route53 DNS and ACM certificate for HTTPS, Secrets Manager secret creation, and `terraform.tfvars` setup.
-
-#### Deploy
-
-Monitoring must be deployed first — it installs the `ServiceMonitor` CRD. Terraform then attaches a scoped IAM policy to ESO's existing role, allowing it to read from `crewmeister/credentials` in Secrets Manager. ESO creates the Kubernetes Secret automatically before the app pods start.
-
-```bash
-cd infrastructure/terraform/monitoring/production
-terraform init
-terraform apply
-
-cd infrastructure/terraform/crewmeister-app/production
-terraform init
-terraform apply
-```
-
-Both modules connect to EKS directly via AWS APIs — no kubeconfig needed.
-
-**Verify**
-```bash
-kubectl get pods --context <your-cluster-context>
-kubectl get pods -n monitoring --context <your-cluster-context>
-```
-
-**Access the application**
-
-The app is reachable via the Ingress host you configured in `terraform.tfvars`:
-```bash
-curl https://<your-app-host>/actuator/health
-curl "https://<your-app-host>/user?id=1"
-```
-
-Monitoring services are not exposed via Ingress — access them via port-forward:
-```bash
-kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80 --context <your-cluster-context>
-kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090 --context <your-cluster-context>
-```
-
-**Destroying the deployments**
-```bash
-cd infrastructure/terraform/crewmeister-app/production && terraform destroy
-cd infrastructure/terraform/monitoring/production && terraform destroy
-```
+Full guide (prerequisites + deploy): **[docs/production-deployment.md](docs/production-deployment.md)**
 
 ---
 
 ## CI/CD Pipeline
 
-The pipeline runs on GitHub Actions and is defined in `.github/workflows/ci.yml`. It triggers on every push to `main`.
+Two GitHub Actions workflows handle CI and CD separately.
+
+---
+
+## CI — Build and Push
+
+Defined in `.github/workflows/ci.yml`. Triggers on every push to `main`.
 
 ### Architecture
 
@@ -539,7 +157,7 @@ push to main
 │       │                                 │
 │       ▼                                 │
 │  docker build + push                    │
-│  (multi-stage — no JDK needed locally)  │
+│  (multi-stage)                          │
 └─────────────────┬───────────────────────┘
                   │
                   ▼
@@ -553,7 +171,7 @@ push to main
 
 **`test`** — spins up a MySQL 8.0 service container, installs JDK 17, and runs `mvn test`. The Spring Boot context load test connects to the real MySQL, runs Flyway migrations, and verifies the application boots successfully.
 
-**`build-and-push`** — runs only if `test` passes. Builds the Docker image using the multi-stage Dockerfile (Maven build happens inside the container — no JDK required on the runner) and pushes to GHCR with two tags.
+**`build-and-push`** — runs only if `test` passes. Builds the Docker image using the multi-stage Dockerfile (Maven build happens inside the container — no JDK required on the runner) and pushes to GHCR with two tags. Maven dependencies are cached between runs via `setup-java`; Docker layers are cached via GHCR (`buildcache` tag, mode=max) — subsequent builds are significantly faster.
 
 ### Image
 
@@ -571,19 +189,108 @@ docker pull ghcr.io/kamran-saeed/crewmeister-challenge:latest
 
 The SHA tag provides traceability — you can identify exactly which commit produced any given image.
 
-### Deployment
+---
 
-The pipeline stops at image push. Deploying to a cluster is a manual step:
+## CD — Terraform Deploy
 
-```bash
-# via Helm:
-helm upgrade crewmeister ./kubernetes/helm/crewmeister -f ./kubernetes/helm/environments/local/values.yaml
+Defined in `.github/workflows/terraform-deploy.yml`. Triggered manually via `workflow_dispatch` — never runs automatically.
 
-# via Terraform — update app_tag in local/main.tf, then:
-cd infrastructure/terraform/crewmeister-app/local && terraform apply
+### How it works
+
+The workflow uses a `plan`/`apply` input dropdown. Running it with `plan` always runs `terraform init` and `terraform plan` — no changes are made. Running it with `apply` runs `terraform apply -auto-approve` in addition.
+
+The intended flow is: run with **plan** → review the plan output in the workflow logs → run again with **apply** only if the plan looks correct.
+
+Two jobs run sequentially — `deploy-monitoring` first, then `deploy-app` (via `needs:`). Each job authenticates to AWS independently using GitHub OIDC, so no long-lived AWS credentials are stored anywhere.
+
+### Architecture
+
+```
+GitHub Actions UI
+  (workflow_dispatch)
+        │
+        │  input: plan | apply
+        ▼
+┌───────────────────────────────────────────────────────────────┐
+│  GitHub Actions — self-hosted runner [self-hosted, linux, eks] │
+│  EC2 t3.small — private subnet, same VPC as EKS               │
+│                                                                │
+│  ┌───────────────────────────────────────────┐                 │
+│  │  Assume OIDC role via short-lived token   │                 │
+│  │  (no AWS keys stored in GitHub Secrets)   │                 │
+│  └───────────────────┬───────────────────────┘                 │
+│                      │                                         │
+│                      ▼                                         │
+│  ┌───────────────────────────────────────────┐                 │
+│  │  Job 1: deploy-monitoring                 │                 │
+│  │  terraform init + plan  (always)          │                 │
+│  │  terraform apply        (if: apply)       │                 │
+│  └───────────────────┬───────────────────────┘                 │
+│                      │ needs:                                  │
+│                      ▼                                         │
+│  ┌───────────────────────────────────────────┐                 │
+│  │  Job 2: deploy-app                        │                 │
+│  │  terraform init + plan  (always)          │                 │
+│  │  terraform apply        (if: apply)       │                 │
+│  └───────────────────────────────────────────┘                 │
+│                      │                                         │
+│                      ▼                                         │
+│         EKS private API endpoint                               │
+│         (resolvable only from within the VPC)                  │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-In a production setup the deploy step would be automated as a third job, gated on the `build-and-push` job and targeting a cloud cluster via kubeconfig stored as a GitHub Actions secret.
+### Self-hosted runner
+
+The workflow runs on a self-hosted EC2 runner inside the same VPC as the EKS cluster. This is required because the EKS API endpoint is private — not reachable from GitHub-hosted runners. The runner is a one-time setup — once provisioned it stays running and picks up jobs automatically.
+
+**Step 1 — Store the GitHub PAT in Secrets Manager**
+
+The runner reads a GitHub PAT on startup to register itself with the repository. Add it to the existing `crewmeister/credentials` secret without overwriting the MySQL password:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id crewmeister/credentials \
+  --region eu-central-1 \
+  --secret-string "$(aws secretsmanager get-secret-value \
+    --secret-id crewmeister/credentials \
+    --region eu-central-1 \
+    --query SecretString \
+    --output text | jq '. + {"github-pat": "your_github_pat"}')"
+```
+
+The PAT requires **Administration: Read and Write** permission on the repository.
+
+**Step 2 — Provision the runner**
+
+```bash
+cd infrastructure/terraform/github-runner
+cp terraform.tfvars.example terraform.tfvars  # fill in cluster name, VPC/subnet IDs, repo name
+terraform init
+terraform apply
+```
+
+This creates the EC2 instance, security group, IAM role, OIDC provider, and EKS access entry. On first boot the instance reads the PAT from Secrets Manager and registers itself as a runner automatically.
+
+**Step 3 — Set GitHub Secrets**
+
+Use the Terraform outputs to configure the repository secrets:
+
+| Secret | Where to get the value |
+|---|---|
+| `AWS_ROLE_ARN` | `oidc_role_arn` output from `terraform apply` in step 2 above |
+| `ESO_ROLE_ARN` | Run `kubectl get sa external-secrets -n external-secrets -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'` on the cluster |
+| `GRAFANA_ADMIN_PASSWORD` | Your chosen Grafana admin password — injected into `terraform.tfvars` at runtime, never stored in the repo or state |
+
+### Usage
+
+**1. Run plan first**
+
+Go to **Actions → Terraform Deploy (Production) → Run workflow**, select `plan`, and click **Run workflow**. Wait for both jobs to complete, then review the `Terraform Plan` step output in each job.
+
+**2. Run apply**
+
+If the plan output looks correct, trigger the workflow again with `apply`. Terraform will deploy both stacks.
 
 ---
 
@@ -633,71 +340,21 @@ The pre-loaded dashboard is **Spring Boot 2.1 System Monitor** — it shows JVM 
 
 ### Kubernetes Monitoring (kube-prometheus-stack)
 
-#### Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        Kubernetes Cluster                             │
-│                                                                       │
-│  ┌─────────── default namespace ──────────────────────────────────┐  │
-│  │                                                                 │  │
-│  │   ┌──────────────────┐       ┌─────────────────────────────┐   │  │
-│  │   │  Spring Boot app │       │       ServiceMonitor        │   │  │
-│  │   │  :8080           │       │  tells Prometheus to scrape │   │  │
-│  │   │  /actuator/      │       │  app:8080/actuator/         │   │  │
-│  │   │  prometheus      │       │  prometheus every 15s       │   │  │
-│  │   └──────────────────┘       └──────────────┬──────────────┘   │  │
-│  └────────────────────────────────────────────┼─────────────────┘  │
-│                                                │                    │
-│  ┌─────────── monitoring namespace ────────────┼─────────────────┐  │
-│  │                                             │                  │  │
-│  │   ┌─────────────────────┐                   │                  │  │
-│  │   │  Prometheus         │◄──────────────────┘                  │  │
-│  │   │  (watches all       │                                      │  │
-│  │   │   ServiceMonitors)  │                                      │  │
-│  │   └──────────┬──────────┘                                      │  │
-│  │              │ datasource                                       │  │
-│  │              ▼                                                  │  │
-│  │   ┌─────────────────────┐   ┌──────────────────────────────┐   │  │
-│  │   │  Grafana            │   │  kube-state-metrics          │   │  │
-│  │   │  pre-built          │   │  node-exporter               │   │  │
-│  │   │  dashboards         │   │  alertmanager (disabled)     │   │  │
-│  │   └─────────────────────┘   └──────────────────────────────┘   │  │
-│  └─────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-The app Helm chart includes an optional `ServiceMonitor` resource — a Kubernetes CRD that tells the Prometheus operator which pods to scrape and how. It is disabled by default — enable it once the monitoring stack is deployed.
+The app Helm chart includes an optional `ServiceMonitor` resource — a Kubernetes CRD that tells the Prometheus operator which pods to scrape and how. It is disabled by default and enabled automatically in production via Terraform.
 
 kube-prometheus-stack is deployed as a separate Terraform module (`infrastructure/terraform/monitoring/`) and includes: Prometheus operator, Prometheus, Grafana, kube-state-metrics, and node-exporter.
 
-#### Accessing (after port-forward)
-
-```bash
-# Grafana
-kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
-
-# Prometheus
-kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090
-```
+Access via port-forward (see the relevant deployment guide for exact commands):
 
 | Service | URL | Credentials |
 |---|---|---|
-| Grafana | `http://localhost:3000` | admin / (password from `terraform.tfvars`) |
+| Grafana | `http://localhost:3000` | admin / (password from `terraform.tfvars` or `GRAFANA_ADMIN_PASSWORD` secret) |
 | Prometheus | `http://localhost:9090` | — |
-| App metrics | `http://localhost:8080/actuator/prometheus` | — |
 
-To verify Prometheus is scraping the app, open `http://localhost:9090/targets` — the `crewmeister-app` target should show `State: UP`.
-
-To explore app metrics in Grafana, open **Explore**, select the Prometheus datasource, and query:
+Useful PromQL queries to explore app metrics:
 
 ```
-# HTTP request rate
-rate(http_server_requests_seconds_count[1m])
-
-# JVM heap usage
-jvm_memory_used_bytes{area="heap"}
-
-# Active DB connections
-hikaricp_connections_active
+rate(http_server_requests_seconds_count[1m])   # HTTP request rate
+jvm_memory_used_bytes{area="heap"}             # JVM heap usage
+hikaricp_connections_active                    # Active DB connections
 ```
