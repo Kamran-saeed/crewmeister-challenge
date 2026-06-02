@@ -64,7 +64,8 @@ data "aws_iam_policy_document" "oidc_permissions" {
       "iam:GetPolicyVersion",
       "iam:ListPolicyVersions",
       "iam:AttachRolePolicy",
-      "iam:DetachRolePolicy"
+      "iam:DetachRolePolicy",
+      "iam:ListAttachedRolePolicies"
     ]
     resources = ["*"]
   }
@@ -84,4 +85,21 @@ resource "aws_iam_policy" "oidc" {
 resource "aws_iam_role_policy_attachment" "oidc" {
   role       = aws_iam_role.oidc.name
   policy_arn = aws_iam_policy.oidc.arn
+}
+
+# ── EKS access entry — allows the OIDC role to manage the cluster ─────────────
+resource "aws_eks_access_entry" "oidc" {
+  cluster_name  = var.eks_cluster_name
+  principal_arn = aws_iam_role.oidc.arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "oidc" {
+  cluster_name  = var.eks_cluster_name
+  principal_arn = aws_iam_role.oidc.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
 }
