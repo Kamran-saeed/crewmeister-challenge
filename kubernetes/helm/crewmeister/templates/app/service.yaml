@@ -3,10 +3,10 @@ kind: Service
 metadata:
   name: {{ .Release.Name }}-app-service
   labels:
-    app: {{ .Release.Name }}
+    {{- include "crewmeister.labels" . | nindent 4 }}
 spec:
   selector:
-    app: {{ .Release.Name }}-app
+    {{- include "crewmeister.appSelectorLabels" . | nindent 4 }}
   ports:
     - name: http
       protocol: TCP

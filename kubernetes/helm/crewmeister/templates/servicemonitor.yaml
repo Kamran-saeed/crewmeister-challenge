@@ -4,11 +4,11 @@ kind: ServiceMonitor
 metadata:
   name: {{ .Release.Name }}-app
   labels:
-    app: {{ .Release.Name }}
+    {{- include "crewmeister.labels" . | nindent 4 }}
 spec:
   selector:
     matchLabels:
-      app: {{ .Release.Name }}
+      {{- include "crewmeister.appSelectorLabels" . | nindent 6 }}
   endpoints:
     - port: http
       path: /actuator/prometheus

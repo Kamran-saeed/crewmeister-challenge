@@ -176,55 +176,15 @@ docker compose down -v
 
 ## Kubernetes Deployment
 
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Kubernetes Cluster                            │
-│                                                                      │
-│   ┌─────────────────┐    ┌─────────────────┐                        │
-│   │   ConfigMap     │    │     Secret      │                        │
-│   │  JDBC URL       │    │  mysql-password │                        │
-│   │  DB name        │    │                 │                        │
-│   │  username       │    └────────┬────────┘                        │
-│   └────────┬────────┘             │                                 │
-│            │                      │                                 │
-│            ▼                      ▼                                 │
-│   ┌─────────────────────────────────────┐                           │
-│   │         app-deployment              │                           │
-│   │  ┌────────────────────────────┐     │                           │
-│   │  │  init container (busybox)  │     │                           │
-│   │  │  waits for MySQL ready     │     │                           │
-│   │  └────────────────────────────┘     │                           │
-│   │  ┌────────────────────────────┐     │                           │
-│   │  │  Spring Boot :8080         │     │                           │
-│   │  │  liveness  → /actuator     │     │                           │
-│   │  │  readiness → /actuator     │     │                           │
-│   │  └────────────────────────────┘     │                           │
-│   └──────────────┬──────────────────────┘                           │
-│                  │                                                   │
-│                  ▼                                                   │
-│   ┌──────────────────────┐      ┌──────────────────────────────┐    │
-│   │   app-service        │      │     mysql-deployment         │    │
-│   │   ClusterIP :8080    │      │  ┌────────────────────────┐  │    │
-│   └──────────────────────┘      │  │  MySQL :3306           │  │    │
-│                                 │  │  liveness → mysqladmin  │  │    │
-│                                 │  │  readiness → mysqladmin │  │    │
-│                                 │  └───────────┬────────────┘  │    │
-│                                 └──────────────┼───────────────┘    │
-│                                                │                    │
-│   ┌──────────────────────┐      ┌──────────────▼───────────────┐    │
-│   │   mysql-service      │      │     mysql-pvc                │    │
-│   │   ClusterIP :3306    │      │     1Gi persistent storage   │    │
-│   └──────────────────────┘      └──────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-Sensitive values (MySQL password) are stored in a Kubernetes Secret. Non-sensitive config (JDBC URL, username, database name) are stored in a ConfigMap. The app deployment reads both at startup.
+The Helm chart supports two deployment environments — local (minikube) and production (EKS). Both share the same chart. Environment-specific behaviour is controlled entirely through values.
 
 The app pod includes an init container that blocks Spring Boot from starting until MySQL is confirmed reachable — eliminating crash-restart loops on startup.
 
-MySQL data is stored on a PersistentVolumeClaim so it survives pod restarts.
+The app runs under a dedicated `ServiceAccount` with `automountServiceAccountToken: false` — no Kubernetes API token is mounted into the container, following the principle of least privilege.
+
+The app container declares CPU and memory requests and limits, giving it `Burstable` QoS class. This ensures the scheduler places pods correctly, prevents noisy-neighbour resource contention, and enables HPA to calculate CPU utilisation accurately.
+
+MySQL runs as a `StatefulSet` rather than a Deployment. StatefulSet gives each pod a stable identity (`mysql-0`) and a stable DNS name via a headless service (`mysql-0.mysql-headless`). Each pod gets its own `PersistentVolumeClaim` via `volumeClaimTemplates` — the PVC is bound to the pod's identity and follows it across restarts, even in multi-AZ clusters where EBS volumes are zone-specific.
 
 ### Values and Overrides
 
@@ -232,12 +192,67 @@ All configurable values live in `values.yaml`. Environment-specific overrides go
 
 | File | Purpose |
 |---|---|
-| `kubernetes/helm/crewmeister/values.yaml` | Defaults — base configuration |
-| `kubernetes/helm/environments/local/values.yaml` | Minikube — local image, `Never` pull policy, real password |
+| `kubernetes/helm/crewmeister/values.yaml` | Defaults — base configuration, all features disabled |
+| `kubernetes/helm/environments/local/values.yaml` | Minikube overrides — gitignored, created from `.example` |
 | `kubernetes/helm/environments/local/values.yaml.example` | Template for local setup |
 | `kubernetes/helm/environments/production/values.yaml.example` | Template for production setup |
 
+The table below shows which features are enabled per deployment method:
+
+| Feature | Raw Helm (minikube) | Terraform local (minikube) | Terraform prod (EKS) |
+|---|:---:|:---:|:---:|
+| K8s Secret (password from values) | ✓ | ✓ | ✗ |
+| External Secrets (ESO + AWS) | ✗ | ✗ | ✓ |
+| HPA (autoscaling) | ✗ | ✗ | ✓ |
+| Ingress (NGINX) | ✗ | ✗ | ✓ |
+| ServiceMonitor (Prometheus) | optional | optional | ✓ |
+| Fixed replica count | ✓ (1) | ✓ (1) | ✗ (HPA owns it) |
+
 ### Local Kubernetes Deployment (minikube)
+
+#### Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        Minikube Cluster                           │
+│                                                                   │
+│  ┌──────────────────┐   ┌──────────────────────────────────────┐  │
+│  │    ConfigMap     │   │           K8s Secret                 │  │
+│  │  JDBC URL        │   │  mysql-password (from tfvars)        │  │
+│  │  DB name         │   └─────────────────┬────────────────────┘  │
+│  │  username        │                     │                       │
+│  └────────┬─────────┘                     │                       │
+│           │                               │                       │
+│  ┌────────▼───────────────────────────────▼──────────────────┐   │
+│  │                    app-deployment  (replicas: 1)           │   │
+│  │   serviceAccount: crewmeister-app (no API token)          │   │
+│  │   ┌────────────────────────────────────────────────────┐  │   │
+│  │   │  init container — waits for MySQL ready            │  │   │
+│  │   └────────────────────────────────────────────────────┘  │   │
+│  │   ┌────────────────────────────────────────────────────┐  │   │
+│  │   │  Spring Boot :8080                                 │  │   │
+│  │   │  resources: 100m/256Mi req  limits: 500m/512Mi     │  │   │
+│  │   │  liveness  → /actuator/health/liveness             │  │   │
+│  │   │  readiness → /actuator/health/readiness            │  │   │
+│  │   └────────────────────────────────────────────────────┘  │   │
+│  └────────────────────────┬──────────────────────────────────┘   │
+│                           │                                       │
+│  ┌────────────────────────▼──────────┐  ┌──────────────────────┐ │
+│  │   app-service (ClusterIP :8080)   │  │  mysql-statefulset   │ │
+│  └────────────────────────┬──────────┘  │  MySQL :3306         │ │
+│                           │             │  volumeClaimTemplates│ │
+│                           │             │  └── mysql-storage   │ │
+│                           │             └──────────┬───────────┘ │
+│                           │                        │             │
+│                           │             ┌──────────▼───────────┐ │
+│                           │             │  mysql-headless-svc  │ │
+│                           │             │  clusterIP: None     │ │
+│                           │             └──────────────────────┘ │
+└───────────────────────────┼───────────────────────────────────────┘
+                            │ kubectl port-forward :8080
+                            ▼
+                      localhost:8080
+```
 
 **1. Start minikube**
 ```bash
@@ -285,12 +300,7 @@ cp kubernetes/helm/environments/local/values.yaml.example kubernetes/helm/enviro
 
 Edit `kubernetes/helm/environments/local/values.yaml` and set your MySQL password. This file is in `.gitignore` and will never be committed.
 
-The app chart includes an optional `ServiceMonitor` resource — a Kubernetes CRD that tells the Prometheus operator to scrape the app's `/actuator/prometheus` endpoint. It is disabled by default. For monitoring, enable it, set the following in your `values.yaml`:
-
-```yaml
-serviceMonitor:
-  enabled: true
-```
+For local deployment, HPA, Ingress, and ESO are all disabled. The app runs with a fixed replica count of 1 and the MySQL password is passed directly via values. Optionally enable `serviceMonitor.enabled: true` if you deployed the monitoring stack.
 
 Then deploy:
 ```bash
@@ -363,30 +373,6 @@ Terraform manages Helm releases as infrastructure as code using the Helm and Kub
 
 The Helm chart is referenced by local path since it lives in the same repository. In a production setup the chart would be published to a registry and versioned independently.
 
-### Structure
-
-**`base/`** — reusable module, shared across environments. Contains the `helm_release` resource and `templatefile()` rendering. No provider or backend configuration.
-
-| File | Purpose |
-|---|---|
-| `main.tf` | `helm_release` resource with `templatefile()` |
-| `variables.tf` | Input variable declarations |
-| `outputs.tf` | Outputs — release name, namespace, status |
-| `templates/values.yaml.tpl` | Helm values template rendered from Terraform variables |
-
-**`local/` and `production/`** — environment root modules. Each calls `../base` and wires in environment-specific values directly in `main.tf`. Only sensitive values (passwords) go in `terraform.tfvars`.
-
-| File | Purpose |
-|---|---|
-| `main.tf` | Calls `../base` with environment-specific values hardcoded |
-| `variables.tf` | Sensitive variable declarations only |
-| `providers.tf` | Provider config — kubeconfig for local, AWS EKS data sources for production |
-| `versions.tf` | Terraform and provider version constraints |
-| `backend.tf` | `local` backend for minikube, `s3` backend for production |
-| `terraform.tfvars` | Sensitive values (passwords) — gitignored |
-| `terraform.tfvars.example` | Template for sensitive values |
-| `.terraform.lock.hcl` | Pins exact provider versions for reproducible installs |
-
 ### Local Deployment (minikube)
 
 Monitoring must be deployed first — it installs the `ServiceMonitor` CRD that the app chart references.
@@ -433,61 +419,45 @@ cd infrastructure/terraform/monitoring/local && terraform destroy
 
 ### Cloud Deployment (AWS EKS)
 
+#### Architecture
+
+```
+                                     ┌───────────────────────────────────────────────────────────────────────┐
+                                     │  EKS Cluster                                                          │
+                                     │                                                                       │
+  Browser                            │  ┌──────────────┐   ┌─────────────────────────────┐   ┌─────────────┐ │
+     │ HTTPS                         │  │   ConfigMap  │   │  ESO ExternalSecret         │   │   MySQL     │ │
+     ▼                               │  │  JDBC URL    │   │  SecretStore → AWS Secrets  │   │ StatefulSet │ │
+  Route53                            │  │  DB name     │   │  Manager → K8s Secret       │   │  mysql-0    │ │
+  *.domain.com                       │  │  username    │   │  (syncs every 1h)           │   │  10Gi EBS   │ │
+     │                               │  └──────┬───────┘   └──────────────┬──────────────┘   │  headless   │ │
+     ▼                               │         │                          │                  │  DNS        │ │
+  NLB + ACM cert                     │         └──────────────┬───────────┘                  └──────┬──────┘ │
+     │ HTTP                          │                        ▼                                     │        │
+     ▼                               │         ┌─────────────────────────────┐                      │        │
+  NGINX Ingress ──────────────────►  │         │  HPA  min:3 max:10 cpu:50%  │                      │        │
+  (routes by Host header)            │         └──────────────┬──────────────┘                      │        │
+                                     │                        │ scales                              │        │
+                                     │         ┌──────────────▼──────────────┐                      │        │
+                                     │         │   app-deployment (3 pods)   │                      │        │
+                                     │         │   Spring Boot :8080         │◄────────────────────-┘        │
+                                     │         │   ServiceAccount (no token) │  mysql-0.mysql-headless DNS   │
+                                     │         │   liveness/readiness probes │                               │ 
+                                     │         └──────────────┬──────────────┘                               │
+                                     │                        │                                              │
+                                     │         ┌──────────────▼──────────────┐                               │
+                                     │         │   app-service  ClusterIP    │                               │
+                                     │         └─────────────────────────────┘                               │
+                                     └─────────────────────────────────────────────────────────────────────--┘
+```
+
 #### Prerequisites
 
-**1. AWS credentials**
-
-Ensure AWS credentials are configured and have permissions for: `eks:DescribeCluster`, `s3:*` on the state bucket, `dynamodb:GetItem/PutItem/DeleteItem` on the lock table.
-
-```bash
-aws configure   # or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
-```
-
-**2. S3 bucket for Terraform state**
-
-```bash
-aws s3api create-bucket \
-  --bucket <your-state-bucket> \
-  --region eu-central-1 \
-  --create-bucket-configuration LocationConstraint=eu-central-1
-
-aws s3api put-public-access-block \
-  --bucket <your-state-bucket> \
-  --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-```
-
-**3. DynamoDB table for state locking**
-
-```bash
-aws dynamodb create-table \
-  --table-name <your-lock-table> \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region eu-central-1
-```
-
-**4. Update backend configuration**
-
-Set the real bucket and table names in both `backend.tf` files:
-- `infrastructure/terraform/crewmeister-app/production/backend.tf`
-- `infrastructure/terraform/monitoring/production/backend.tf`
-
-**5. Create `terraform.tfvars` from examples**
-
-```bash
-cp infrastructure/terraform/monitoring/production/terraform.tfvars.example \
-   infrastructure/terraform/monitoring/production/terraform.tfvars
-
-cp infrastructure/terraform/crewmeister-app/production/terraform.tfvars.example \
-   infrastructure/terraform/crewmeister-app/production/terraform.tfvars
-```
-
-Edit both files and set your EKS cluster name and passwords.
+See **[docs/production-prerequisites.md](docs/production-prerequisites.md)** for the full setup guide covering: AWS credentials, S3/DynamoDB backend, EKS cluster requirements (NGINX ingress, EBS CSI, metrics-server, ESO), Route53 DNS and ACM certificate for HTTPS, Secrets Manager secret creation, and `terraform.tfvars` setup.
 
 #### Deploy
 
-Monitoring must be deployed first — it installs the `ServiceMonitor` CRD.
+Monitoring must be deployed first — it installs the `ServiceMonitor` CRD. Terraform then attaches a scoped IAM policy to ESO's existing role, allowing it to read from `crewmeister/credentials` in Secrets Manager. ESO creates the Kubernetes Secret automatically before the app pods start.
 
 ```bash
 cd infrastructure/terraform/monitoring/production
@@ -507,9 +477,16 @@ kubectl get pods --context <your-cluster-context>
 kubectl get pods -n monitoring --context <your-cluster-context>
 ```
 
-**Access services via port-forward**
+**Access the application**
+
+The app is reachable via the Ingress host you configured in `terraform.tfvars`:
 ```bash
-kubectl port-forward svc/crewmeister-app-service 8080:8080 --context <your-cluster-context>
+curl https://<your-app-host>/actuator/health
+curl "https://<your-app-host>/user?id=1"
+```
+
+Monitoring services are not exposed via Ingress — access them via port-forward:
+```bash
 kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80 --context <your-cluster-context>
 kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090 --context <your-cluster-context>
 ```

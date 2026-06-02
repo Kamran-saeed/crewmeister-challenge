@@ -1,0 +1,71 @@
+name: Terraform Deploy (Production)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # required for OIDC token request
+  contents: read
+
+jobs:
+  deploy-monitoring:
+    name: Deploy Monitoring Stack
+    runs-on: [self-hosted, linux, eks]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: Write terraform.tfvars
+        working-directory: infrastructure/terraform/monitoring/production
+        run: |
+          cat > terraform.tfvars <<EOF
+          cluster_name           = "ce-infra"
+          grafana_admin_password = "${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+          EOF
+
+      - name: Terraform Init
+        working-directory: infrastructure/terraform/monitoring/production
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infrastructure/terraform/monitoring/production
+        run: terraform apply -auto-approve
+
+  deploy-app:
+    name: Deploy Application
+    runs-on: [self-hosted, linux, eks]
+    needs: deploy-monitoring
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: Write terraform.tfvars
+        working-directory: infrastructure/terraform/crewmeister-app/production
+        run: |
+          cat > terraform.tfvars <<EOF
+          cluster_name            = "ce-infra"
+          service_monitor_enabled = true
+          eso_role_arn            = "${{ secrets.ESO_ROLE_ARN }}"
+          EOF
+
+      - name: Terraform Init
+        working-directory: infrastructure/terraform/crewmeister-app/production
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infrastructure/terraform/crewmeister-app/production
+        run: terraform apply -auto-approve

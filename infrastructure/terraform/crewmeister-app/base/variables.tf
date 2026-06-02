@@ -39,6 +39,34 @@ variable "service_monitor_enabled" {
   type        = bool
 }
 
+variable "autoscaling" {
+  description = "HPA configuration for the app"
+  type = object({
+    enabled      = bool
+    min_replicas = number
+    max_replicas = number
+    target_cpu   = number
+  })
+}
+
+variable "ingress" {
+  description = "Ingress configuration for the app"
+  type = object({
+    enabled    = bool
+    class_name = string
+    host       = string
+  })
+}
+
+variable "external_secrets" {
+  description = "External Secrets Operator configuration — pulls credentials from AWS Secrets Manager"
+  type = object({
+    enabled      = bool
+    eso_role_arn = string # IAM role ARN attached to the ESO service account — get it with: kubectl get sa external-secrets -n external-secrets -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+    secret_name  = string
+  })
+}
+
 variable "wait" {
   description = "Wait for all pods to be ready before marking the release as successful"
   type        = bool

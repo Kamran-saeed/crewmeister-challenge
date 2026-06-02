@@ -1,3 +1,7 @@
-cluster_name   = "your-eks-cluster-name"
-mysql_password          = "your_strong_production_password"
+cluster_name            = "your-eks-cluster-name"
 service_monitor_enabled = true
+
+# IAM role ARN attached to the External Secrets Operator service account.
+# Run this to get it:
+#   kubectl get sa external-secrets -n external-secrets -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+eso_role_arn = "arn:aws:iam::YOUR_ACCOUNT_ID:role/your-eso-role-name"

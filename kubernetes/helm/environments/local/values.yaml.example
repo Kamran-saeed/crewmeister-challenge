@@ -6,3 +6,15 @@ app:
 mysql:
   password: your_password_here
   storage: 1Gi
+
+autoscaling:
+  enabled: false
+
+externalSecrets:
+  enabled: false
+
+ingress:
+  enabled: false
+
+serviceMonitor:
+  enabled: false

@@ -1,18 +1,19 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ .Release.Name }}-mysql
   labels:
-    app: {{ .Release.Name }}
+    {{- include "crewmeister.labels" . | nindent 4 }}
 spec:
+  serviceName: {{ .Release.Name }}-mysql-headless
   replicas: 1
   selector:
     matchLabels:
-      app: {{ .Release.Name }}-mysql
+      {{- include "crewmeister.mysqlSelectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}-mysql
+        {{- include "crewmeister.mysqlSelectorLabels" . | nindent 8 }}
     spec:
       containers:
         - name: mysql
@@ -50,7 +51,12 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 5
-      volumes:
-        - name: mysql-storage
-          persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-mysql-pvc
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.mysql.storage }}

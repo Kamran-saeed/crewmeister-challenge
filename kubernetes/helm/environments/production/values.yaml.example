@@ -1,9 +1,43 @@
 app:
   image: ghcr.io/kamran-saeed/crewmeister-challenge
-  tag: "your_image_tag_here"
-  replicas: 2
+  tag: "sha-abc1234"  # use a specific image SHA tag — never use 'latest' in production
   pullPolicy: Always
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  probes:
+    liveness:
+      path: /actuator/health/liveness
+      initialDelaySeconds: 30
+      periodSeconds: 15
+      timeoutSeconds: 5
+    readiness:
+      path: /actuator/health/readiness
+      initialDelaySeconds: 15
+      periodSeconds: 10
+      timeoutSeconds: 5
 
 mysql:
-  password: your_strong_password_here
-  storage: 10Gi
+  storage: 10Gi  # PVC size — cannot be reduced after first deploy
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 50
+
+ingress:
+  enabled: true
+  className: nginx
+  host: "your-app.your-domain.com"
+
+externalSecrets:
+  enabled: true
+  secretName: "crewmeister/credentials"  # AWS Secrets Manager secret name — must contain mysql-root-password key
+
+serviceMonitor:
+  enabled: true  # requires kube-prometheus-stack deployed first
