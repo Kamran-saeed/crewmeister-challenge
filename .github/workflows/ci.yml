@@ -35,6 +35,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: maven
 
       - name: Run tests
         env:
@@ -69,3 +70,5 @@ jobs:
           tags: |
             ghcr.io/kamran-saeed/crewmeister-challenge:latest
             ghcr.io/kamran-saeed/crewmeister-challenge:sha-${{ github.sha }}
+          cache-from: type=registry,ref=ghcr.io/kamran-saeed/crewmeister-challenge:buildcache
+          cache-to: type=registry,ref=ghcr.io/kamran-saeed/crewmeister-challenge:buildcache,mode=max
