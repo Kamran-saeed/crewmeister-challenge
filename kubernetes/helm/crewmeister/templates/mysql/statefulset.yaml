@@ -28,6 +28,8 @@ spec:
                   key: mysql-password
             - name: MYSQL_DATABASE
               value: {{ .Values.mysql.database | quote }}
+            - name: MYSQL_ROOT_HOST
+              value: "%"
           volumeMounts:
             - name: mysql-storage
               mountPath: /var/lib/mysql
