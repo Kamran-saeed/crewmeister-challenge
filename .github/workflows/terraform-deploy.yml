@@ -52,7 +52,7 @@ jobs:
         run: terraform apply -auto-approve
 
   deploy-app:
-    name: "${{ inputs.action == 'plan' && 'Plan' || 'Apply' }} Application"
+    name: "${{ inputs.action == 'plan' && 'Plan' || 'Apply' }} Application Stack"
     runs-on: [self-hosted, linux, eks]
     needs: deploy-monitoring
 
