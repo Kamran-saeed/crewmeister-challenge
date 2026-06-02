@@ -2,6 +2,14 @@ name: Terraform Deploy (Production)
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform — run 'plan' first, review logs, then run 'apply'"
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
 
 permissions:
   id-token: write
@@ -9,9 +17,8 @@ permissions:
 
 jobs:
   deploy-monitoring:
-    name: Deploy Monitoring Stack
+    name: "${{ inputs.action == 'plan' && 'Plan' || 'Apply' }} Monitoring Stack"
     runs-on: [self-hosted, linux, eks]
-    environment: production
 
     steps:
       - name: Checkout code
@@ -40,14 +47,14 @@ jobs:
         run: terraform plan
 
       - name: Terraform Apply
+        if: inputs.action == 'apply'
         working-directory: infrastructure/terraform/monitoring/production
         run: terraform apply -auto-approve
 
   deploy-app:
-    name: Deploy Application
+    name: "${{ inputs.action == 'plan' && 'Plan' || 'Apply' }} Application"
     runs-on: [self-hosted, linux, eks]
     needs: deploy-monitoring
-    environment: production
 
     steps:
       - name: Checkout code
@@ -77,5 +84,6 @@ jobs:
         run: terraform plan
 
       - name: Terraform Apply
+        if: inputs.action == 'apply'
         working-directory: infrastructure/terraform/crewmeister-app/production
         run: terraform apply -auto-approve
